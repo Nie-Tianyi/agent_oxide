@@ -1,5 +1,3 @@
-// ── Error ───────────────────────────────────────────────────────────────────
-
 #[derive(Debug)]
 pub enum DeepSeekError {
     /// reqwest error (connection, timeout, DNS, TLS).

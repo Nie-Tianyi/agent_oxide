@@ -1,4 +1,4 @@
-mod client;
+mod core;
 
 use futures_util::StreamExt;
 use reqwest::Client;
@@ -10,8 +10,8 @@ use std::io::{Write, stdout};
 async fn main() -> Result<(), Box<dyn Error>> {
     // 加载 .env 中的环境变量
     dotenvy::dotenv().ok();
-    let api_key = std::env::var("DeepSeek_API")
-        .expect("未找到环境变量 DeepSeek_API，请在 .env 文件中设置");
+    let api_key =
+        std::env::var("DeepSeek_API").expect("未找到环境变量 DeepSeek_API，请在 .env 文件中设置");
 
     let client = Client::new();
 
@@ -60,7 +60,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
                 // ── 分隔线 ──
                 println!("───────────────────────────────────────────");
-                println!("[块] 大小: {} bytes | 累计: {} bytes", chunk.len(), total_bytes);
+                println!(
+                    "[块] 大小: {} bytes | 累计: {} bytes",
+                    chunk.len(),
+                    total_bytes
+                );
                 println!("───────────────────────────────────────────");
 
                 // 打印原始 UTF-8 文本（SSE 格式）

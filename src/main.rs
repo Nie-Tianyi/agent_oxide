@@ -1,6 +1,3 @@
-mod core;
-mod memory;
-
 use futures_util::StreamExt;
 use reqwest::Client;
 use serde_json::json;

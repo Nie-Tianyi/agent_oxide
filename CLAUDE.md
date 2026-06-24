@@ -24,7 +24,8 @@ This is a **Rust agent framework** built from scratch (Rust 2024 edition, Tokio 
 | ------ | ------- |
 | `src/core/client/` | DeepSeek API client — typed request/response, streaming SSE support |
 | `src/core/agent.rs` | Agent scaffolding (empty — next to implement) |
-| `src/memory/mod.rs` | Conversation memory — `Memory`, `SharedMemory`, compaction with two-phase async API |
+| `src/lib.rs` | Library crate root — re-exports `core` and `memory` for doc tests and external consumers |
+| `src/memory/mod.rs` | Conversation memory — `Memory`, `SharedMemory`, `MemoryBuilder`, two-phase compaction with `MemoryError` |
 | `src/main.rs` | Scratchpad: raw HTTP-level SSE demo (does **not** use the `client` module yet) |
 
 The `core` module is the top-level crate root for the agent framework:
@@ -52,37 +53,38 @@ HTTP chunk → buffer → find_event_end (\n\n) → trim_trailing_newlines → e
 
 | Type | Purpose |
 | ---- | ------- |
-| `Memory` | Plain struct: `{ messages: Vec<Message>, compact_threshold: usize }` |
+| `Memory` | `{ messages: Vec<Message>, compact_threshold: usize, keep_last_n: usize }` — configurable compaction |
 | `SharedMemory` | `Arc<RwLock<Memory>>` — for sharing across tokio tasks |
-| `CompactSignal` | `Ok` / `NeedsCompact` — returned by `push()` |
+| `MemoryBuilder` | Fluent builder — `.threshold(chars).keep_last(n).with_messages(vec).build()` |
+| `CompactSignal` | `WithinBudget` / `NeedsCompact` — returned by `push()` |
+| `MemoryError` | `SummariserFailed(String)` / `NothingToCompact` — implements `Error` + `Display` |
 
-**Core API**: `push(msg) -> CompactSignal`, `messages()`, `get_context()`, `to_context_vec()`
-**Context length**: `total_chars()` (sums `content` lengths), `message_count()`, `needs_compact()`, `set_compact_threshold()`
-**Compaction** — single async method that uses a flash model for summarisation. **System messages are never compacted** — they stay verbatim; only `User`, `Assistant`, and `Tool` messages are candidates:
+**Core API**: `push(msg) -> CompactSignal`, `messages()`, `to_context_vec()`, `len()`, `is_empty()`
+**Context length**: `total_chars()` (sums `content` lengths), `message_count()`, `needs_compact()`, `compact_threshold()`, `set_compact_threshold()`, `keep_last_n()`
+**Compaction** — two-phase design decoupling Memory from any LLM provider. **System messages are never drained** — they stay verbatim; only `User`, `Assistant`, and `Tool` messages are candidates:
 
 ```rust
-// Automatically drains old non-System messages, sends them to the flash model,
-// and inserts the summary as a System message at position 0.
-mem.compact().await?;
+// Phase 1: drain old non-System messages
+let drained: Vec<Message> = mem.drain_for_compact();
+// Phase 2: summarise externally (caller controls the LLM), then apply
+mem.apply_compact(summary);
 // Result: [System("summary..."), System(original...), msg_recent_0, ..., msg_recent_9]
 ```
 
-Uses `DEFAULT_FLASH_MODEL` env var (falls back to `"deepseek-chat"`) and `DEEPSEEK_API` for authentication.
-
-Uses `Message` and `Role` from `crate::core::client` — `core/mod.rs` declares `pub mod client;` so this works.
+Convenience free function `compact_with_deepseek(memory, client, model)` composes both phases against a flash model via `DeepSeekClient`. Uses `Message` and `Role` from `crate::core::client`.
 
 ### Key patterns
 
 - **Forward-compat enum**: `FinishReason::Other(String)` catches unknown values rather than failing deserialization. Custom `Serialize`/`Deserialize` because `#[serde(rename_all)]` can't handle a catch-all variant.
 - **SSE event buffering**: Network chunks can split an event mid-line. The stream accumulates bytes in a `Vec<u8>` buffer and only drains when `\n\n` appears.
-- **Single-call async compaction**: `compact()` drains only non-System messages (keeping System messages verbatim), creates a `DeepSeekClient` pointed at the flash model, sends old messages for summarisation, and inserts the summary as a System message at position 0 — all in one async call.
+- **Two-phase compaction**: `drain_for_compact()` + `apply_compact()` decouples Memory from any LLM provider. The caller controls summarisation strategy; a convenience free function `compact_with_deepseek()` ties them together with a `DeepSeekClient` for the common case. System messages are never drained.
 
 ### Roadmap (from README)
 
 The project is in **Phase 1** (MVP). Completed and next:
 
 - [x] `core/client/` — DeepSeek API client with typed request/response and SSE streaming
-- [x] `memory/mod.rs` — conversation context with sliding window truncation (`Arc<RwLock<Memory>>`), push/get_context, two-phase compact API
+- [x] `memory/mod.rs` — conversation context with configurable compaction (`Arc<RwLock<Memory>>`), `MemoryBuilder`, two-phase `drain_for_compact`/`apply_compact`, `compact_with_deepseek` convenience fn
 - [ ] `tools.rs` — `Tool` trait + tool registry + 1–2 example tools
 - [ ] `core/agent.rs` — main loop: LLM → match (text → done / tool_calls → execute → push to memory → loop), with `max_steps` guard (scaffolding exists)
 

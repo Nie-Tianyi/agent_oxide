@@ -8,6 +8,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cargo build              # debug build
 cargo build --release    # release build
 cargo test               # run all tests
+cargo test tui           # run TUI module tests only
 cargo test -p agent_oxide -- test_find_event_end  # run a single test
 cargo clippy             # lint
 ```
@@ -18,16 +19,17 @@ Set `DEEPSEEK_API` in `.env` before running — `dotenvy` loads it at startup.
 
 This is a **Rust agent framework** built from scratch (Rust 2024 edition, Tokio async). The target application is an auto-researcher that autonomously uses tools to produce Markdown research reports.
 
-### Current phase (MVP)
+### Module map
 
 | Module | Purpose |
 | ------ | ------- |
 | `src/core/client/` | DeepSeek API client — typed request/response, streaming SSE support |
-| `src/core/agent.rs` | Agent scaffolding (empty — next to implement) |
-| `src/lib.rs` | Library crate root — re-exports `core`, `memory`, `tools` |
+| `src/core/agent.rs` | Agent loop — `run_loop()` (fire-and-forget) and `run_with_events()` (real-time streaming via channel) with `max_steps` guard |
+| `src/tui/` | ratatui-based chat interface — scrollable history, streaming tokens, styled tool calls, slash commands |
 | `src/memory/mod.rs` | Conversation memory — `Memory`, `SharedMemory`, `MemoryBuilder`, two-phase compaction with `MemoryError` |
 | `src/tools/` | Tool system — `Tool` trait, `ToolRegistry`, `ToolError`, `CalculatorTool`, `EchoTool`, and file-editing tools (`ReadTool`, `WriteTool`, `EditTool`, `GlobTool`, `GrepTool`, `LsTool`) |
-| `src/main.rs` | Scratchpad: raw HTTP-level SSE demo (does **not** use the `client` module yet) |
+| `src/lib.rs` | Library crate root — re-exports `core`, `memory`, `tools`, `tui` |
+| `src/main.rs` | Binary entry point — TUI by default, `--no-tui` for legacy line-based CLI |
 
 The `core` module is the top-level crate root for the agent framework:
 
@@ -46,9 +48,24 @@ The `client` submodule is split by concern:
 
 ```text
 HTTP chunk → buffer → find_event_end (\n\n) → trim_trailing_newlines → extract_sse_data (strip "data: ") → parse JSON → DeepSeekChunk
-                                                                                          ↓
-                                                                                   skip if empty / [DONE]
+                                                                                         ↓
+                                                                                  skip if empty / [DONE]
 ```
+
+### Agent module (`src/core/agent.rs`)
+
+| Type | Purpose |
+| ---- | ------- |
+| `Agent` | `{ client: DeepSeekClient, memory: SharedMemory, registry: Arc<ToolRegistry>, model, max_steps, streaming }` |
+| `AgentEvent` | `Token(String)` / `ReasoningToken(String)` / `ToolCallStart { id, name }` / `ToolCallArgsDelta { id, delta }` / `ToolResult { id, name, output }` / `Done` — sent through `mpsc::UnboundedSender` during streaming |
+| `AgentError` | `DeepSeek(String)` / `Tool { name, error }` |
+
+**Core API**:
+
+- `run_loop()` — fire-and-forget: runs the agent until `max_steps` is reached or the model returns no tool calls. Returns the final text content.
+- `run_with_events(tx: UnboundedSender<AgentEvent>)` — streaming variant: sends real-time events as they arrive from the model. The caller consumes events from the receiver side.
+- Builder methods: `with_model()`, `with_max_steps()`, `streaming()`.
+- **Streaming loop**: sends `Token`/`ReasoningToken` for text deltas, `ToolCallStart` when a tool call begins, `ToolCallArgsDelta` as argument chunks arrive, executes the tool after full args are assembled, sends `ToolResult`, and finally `Done`. On error, sends an error token then `Done`.
 
 ### Memory module (`src/memory/mod.rs`)
 
@@ -115,12 +132,53 @@ Tool impl ← ToolRegistry::execute(name, args) ← ToolCall.function.{name, arg
 
 **Test convention**: tests live inline in each submodule file (`#[cfg(test)]` on `impl` blocks / free functions), consistent with the rest of the crate.
 
+### TUI module (`src/tui/`)
+
+ratatui + crossterm-based chat interface modeled after Claude Code. Split by concern:
+
+| File | Purpose |
+| ---- | ------- |
+| `mod.rs` | Module root — `pub mod app; mod event; mod ui;`, re-exports `App`, `ChatMessage`, `ToolCallState`, `TuiCommand`, `run` |
+| `app.rs` | Core state machine — `App` struct, `ChatMessage` enum (6 variants), `apply_event()` streaming state machine, `handle_key()` keyboard processing with slash commands and Unicode-safe editing, 24 unit tests |
+| `ui.rs` | ratatui rendering — three-panel `Layout` (chat/input/status), styled `Line`/`Span` per message variant, scrollable `Paragraph`, hardware cursor, line-count estimation, 5 unit tests |
+| `event.rs` | Event loop + agent bridge — `run()` entry point (terminal init/restore, panic hook), `run_event_loop()` (50ms poll, agent event drain, render), `agent_handler()` async background task (spawn/cancel/clear lifecycle) |
+
+**Channel topology** — single tokio runtime, main thread runs sync TUI loop, background `tokio::spawn` task manages agent lifecycle:
+
+```text
+TUI thread                          Agent task (tokio::spawn)
+─────────                          ────────────────────────
+cmd_tx ───────── TuiCommand ──────→ cmd_rx
+agent_rx ←────── AgentEvent ─────── agent_tx
+```
+
+**`ChatMessage` variants**: `User`, `Assistant`, `Reasoning`, `ToolCall { id, name, args, state }`, `System`, `Error` — each rendered with distinct styling (see `message_to_lines()` in ui.rs).
+
+**`apply_event` streaming state machine**:
+
+- `Token(t)` → append to last `Assistant` (or create new)
+- `ReasoningToken(t)` → append to last `Reasoning` (or create new)
+- `ToolCallStart { id, name }` → push new `ToolCall { state: Running }`
+- `ToolCallArgsDelta { id, delta }` → find by id, append args
+- `ToolResult { id, name, output }` → find by id, set `Complete(output)`
+- `Done` → set `streaming = false`
+
+**Keybindings**: Enter (submit), Ctrl+C (cancel/exit), Esc (cancel), Ctrl+D (exit on empty), PgUp/PgDown (scroll), Up/Down (history), Left/Right/Home/End (cursor).
+
+**Slash commands** (handled locally): `/exit`, `/clear`, `/stats`, `/tools`, `/help`.
+
+**UTF-8 safety**: `floor_char_boundary()` used in `truncate_args()` and `truncate_output()` to avoid panics on multi-byte character boundaries.
+
+**Entry point**: `agent_oxide::tui::run(agent, memory, tool_names, &model)` — synchronous, blocks until exit.
+
 ### Key patterns
 
 - **Forward-compat enum**: `FinishReason::Other(String)` catches unknown values rather than failing deserialization. Custom `Serialize`/`Deserialize` because `#[serde(rename_all)]` can't handle a catch-all variant.
 - **SSE event buffering**: Network chunks can split an event mid-line. The stream accumulates bytes in a `Vec<u8>` buffer and only drains when `\n\n` appears.
 - **Two-phase compaction**: `drain_for_compact()` + `apply_compact()` decouples Memory from any LLM provider. The caller controls summarisation strategy; a convenience free function `compact_with_deepseek()` ties them together with a `DeepSeekClient` for the common case. System messages are never drained.
 - **WorkspaceFs sandbox**: All file-editing tools hold `Arc<WorkspaceFs>` and delegate to it. `resolve()` canonicalizes every path and rejects anything outside `workspace_root`. `FsError` (I/O layer) is mapped to `ToolError` (LLM-visible) by each tool's `map_fs_err()`. The `normalize_partial()` helper handles non-existent paths by walking up to the first existing ancestor.
+- **Async bridge (TUI)**: TUI event loop runs synchronously on the main thread; agent runs in a `tokio::spawn` background task. `mpsc::unbounded_channel` bridges them. `try_recv` drains agent events after each render frame; a 50ms poll timeout allows the runtime to make progress. Agent events are collected into a `Vec` and applied after `terminal.draw()` releases its immutable borrow.
+- **Cancellation**: `agent_handler` tracks the current agent's `tokio::task::JoinHandle`. On `CancelGeneration`, it aborts the handle and sends a synthetic `[Cancelled]` token + `Done`. On `Exit`, it aborts and breaks the handler loop.
 
 ### Roadmap (from README)
 
@@ -130,6 +188,7 @@ The project is in **Phase 1** (MVP). Completed and next:
 - [x] `memory/mod.rs` — conversation context with configurable compaction (`Arc<RwLock<Memory>>`), `MemoryBuilder`, two-phase `drain_for_compact`/`apply_compact`, `compact_with_deepseek` convenience fn
 - [x] `tools/` — `Tool` trait + `ToolRegistry` + `CalculatorTool` + `EchoTool`, split into `mod.rs` / `error.rs` / `tool.rs` / `registry.rs` / `calculator.rs` / `echo.rs`
 - [x] `tools/fs.rs` + file-editing tools — `WorkspaceFs` sandbox + `ReadTool` / `WriteTool` / `EditTool` / `GlobTool` / `GrepTool` / `LsTool`
-- [ ] `core/agent.rs` — main loop: LLM → match (text → done / tool_calls → execute → push to memory → loop), with `max_steps` guard (scaffolding exists)
+- [x] `core/agent.rs` — main loop with `run_loop()` (batch) and `run_with_events()` (streaming via `AgentEvent` channel), `max_steps` guard, tool-call dispatch via `ToolRegistry`
+- [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands, status bar. Default mode; `--no-tui` for legacy CLI.
 
-Phases 2 and 3 cover macros/schemars for auto-schema, streaming UX via mpsc, structured output, RAG with vector DB, TUI, and observability with `tracing`.
+Phases 2 and 3 cover macros/schemars for auto-schema, streaming UX via mpsc, structured output, RAG with vector DB, and observability with `tracing`.

@@ -311,7 +311,9 @@ fn truncate_for_display(text: &str, max_len: usize) -> String {
     if text.len() <= max_len {
         return text;
     }
-    format!("{}...", &text[..max_len])
+    // Find a valid UTF-8 char boundary at or before max_len
+    let boundary = text.floor_char_boundary(max_len);
+    format!("{}...", &text[..boundary])
 }
 
 fn truncate_path(path: &std::path::Path, max_len: usize) -> String {

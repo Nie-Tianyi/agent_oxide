@@ -3,6 +3,8 @@
 //! The mutable state machine for the TUI: chat messages, input buffer,
 //! scrolling, streaming status, and keyboard processing.
 
+use std::time::SystemTime;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::agent::AgentEvent;
@@ -17,22 +19,40 @@ use crate::memory::SharedMemory;
 #[derive(Debug, Clone)]
 pub enum ChatMessage {
     /// User input — cyan, bold, `>` prefix.
-    User { content: String },
+    User { content: String, timestamp: String },
     /// Model text output — white, no prefix. Streamed token-by-token.
-    Assistant { content: String },
+    Assistant { content: String, timestamp: String },
     /// Chain-of-thought reasoning — yellow, dimmed.
-    Reasoning { content: String },
+    Reasoning { content: String, timestamp: String },
     /// A tool call, either in-progress or completed.
     ToolCall {
         id: String,
         name: String,
         args: String,
         state: ToolCallState,
+        timestamp: String,
     },
     /// System-level message (slash commands, info).
-    System { content: String },
+    System { content: String, timestamp: String },
     /// Error display — red, bold.
-    Error { content: String },
+    Error { content: String, timestamp: String },
+}
+
+impl ChatMessage {
+    /// Returns a formatted local-time timestamp string (HH:MM:SS).
+    pub fn now_timestamp() -> String {
+        let secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        // Approximate local time from UTC — works for display purposes.
+        // On Windows this gives UTC; use a simple offset heuristic.
+        let total_secs = secs % 86400; // seconds within the day
+        let hours = total_secs / 3600;
+        let minutes = (total_secs % 3600) / 60;
+        let seconds = total_secs % 60;
+        format!("{hours:02}:{minutes:02}:{seconds:02}")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -108,7 +128,8 @@ impl App {
         let model = model.into();
         Self {
             messages: vec![ChatMessage::System {
-                content: format!("Agent Oxide — Model: {model} | /help for commands",),
+                content: format!("Agent Oxide — Model: {model} | /help for commands"),
+                timestamp: ChatMessage::now_timestamp(),
             }],
             line_counts: vec![1],
             input: String::new(),
@@ -137,20 +158,26 @@ impl App {
     pub fn apply_event(&mut self, event: AgentEvent) {
         match event {
             AgentEvent::Token(text) => match self.messages.last_mut() {
-                Some(ChatMessage::Assistant { content }) => {
+                Some(ChatMessage::Assistant { content, .. }) => {
                     content.push_str(&text);
                 }
                 _ => {
-                    self.messages.push(ChatMessage::Assistant { content: text });
+                    self.messages.push(ChatMessage::Assistant {
+                        content: text,
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
                 }
             },
 
             AgentEvent::ReasoningToken(text) => match self.messages.last_mut() {
-                Some(ChatMessage::Reasoning { content }) => {
+                Some(ChatMessage::Reasoning { content, .. }) => {
                     content.push_str(&text);
                 }
                 _ => {
-                    self.messages.push(ChatMessage::Reasoning { content: text });
+                    self.messages.push(ChatMessage::Reasoning {
+                        content: text,
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
                 }
             },
 
@@ -160,6 +187,7 @@ impl App {
                     name,
                     args: String::new(),
                     state: ToolCallState::Running,
+                    timestamp: ChatMessage::now_timestamp(),
                 });
             }
 
@@ -210,8 +238,15 @@ impl App {
     /// only need shared state already available on the TUI side.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
         match key.code {
-            // ── Submit ──────────────────────────────────────────
+            // ── Submit / Newline ───────────────────────────────
             KeyCode::Enter => {
+                // Shift+Enter inserts a newline
+                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                    self.input.insert(self.input_cursor, '\n');
+                    self.input_cursor += 1;
+                    return None;
+                }
+
                 if self.streaming {
                     return None;
                 }
@@ -237,6 +272,7 @@ impl App {
                 // Normal user message
                 self.messages.push(ChatMessage::User {
                     content: input.clone(),
+                    timestamp: ChatMessage::now_timestamp(),
                 });
                 self.input.clear();
                 self.input_cursor = 0;
@@ -289,13 +325,46 @@ impl App {
                 None
             }
 
-            // ── History navigation ─────────────────────────────
+            // ── Multi-line / History navigation ────────────────
             KeyCode::Up => {
+                // If not navigating history and cursor is below first line,
+                // move cursor up within multi-line input.
+                if self.history_index.is_none() {
+                    let cursor_line = self.input[..self.input_cursor]
+                        .chars()
+                        .filter(|&c| c == '\n')
+                        .count();
+                    if cursor_line > 0 {
+                        // Find the start of the current line
+                        let line_start = self.input[..self.input_cursor]
+                            .rfind('\n')
+                            .map(|p| p + 1)
+                            .unwrap_or(0);
+                        // Find the start of the previous line
+                        if let Some(prev_start) =
+                            self.input[..line_start.saturating_sub(1)].rfind('\n')
+                        {
+                            let prev_start = prev_start + 1;
+                            let prev_line_len = line_start.saturating_sub(prev_start + 1);
+                            // Position cursor at same column, clamped to line length
+                            let col_in_line = self.input_cursor.saturating_sub(line_start);
+                            let new_col = col_in_line.min(prev_line_len);
+                            self.input_cursor = prev_start + new_col;
+                        } else {
+                            // First line — column clamped
+                            let col_in_line = self.input_cursor.saturating_sub(line_start);
+                            let new_col = col_in_line.min(line_start.saturating_sub(1));
+                            self.input_cursor = new_col;
+                        }
+                        return None;
+                    }
+                }
+
+                // Fall through to history navigation
                 if self.history.is_empty() {
                     return None;
                 }
                 if self.history_index.is_none() {
-                    // Starting history navigation — save current draft
                     self.draft_input = self.input.clone();
                     self.history_index = Some(self.history.len());
                 }
@@ -309,6 +378,40 @@ impl App {
                 None
             }
             KeyCode::Down => {
+                // If not navigating history, try to move cursor down in multi-line input.
+                if self.history_index.is_none() {
+                    let total_lines = self.input.chars().filter(|&c| c == '\n').count() + 1;
+                    let cursor_line = self.input[..self.input_cursor]
+                        .chars()
+                        .filter(|&c| c == '\n')
+                        .count();
+                    if cursor_line + 1 < total_lines {
+                        // Find end of current line
+                        let line_end = self.input[self.input_cursor..]
+                            .find('\n')
+                            .map(|p| self.input_cursor + p)
+                            .unwrap_or(self.input.len());
+                        // Start of next line
+                        let next_line_start = line_end + 1;
+                        // End of next line
+                        let next_line_end = self.input[next_line_start..]
+                            .find('\n')
+                            .map(|p| next_line_start + p)
+                            .unwrap_or(self.input.len());
+                        // Position at same column, clamped to next line length
+                        let line_start = self.input[..self.input_cursor]
+                            .rfind('\n')
+                            .map(|p| p + 1)
+                            .unwrap_or(0);
+                        let col_in_line = self.input_cursor.saturating_sub(line_start);
+                        let next_line_len = next_line_end.saturating_sub(next_line_start);
+                        let new_col = col_in_line.min(next_line_len);
+                        self.input_cursor = next_line_start + new_col;
+                        return None;
+                    }
+                }
+
+                // Fall through to history navigation
                 if let Some(ref mut idx) = self.history_index {
                     if *idx + 1 < self.history.len() {
                         *idx += 1;
@@ -394,6 +497,7 @@ impl App {
                 self.messages.clear();
                 self.messages.push(ChatMessage::System {
                     content: "Conversation cleared (system prompt preserved).".into(),
+                    timestamp: ChatMessage::now_timestamp(),
                 });
                 Some(Some(TuiCommand::ClearConversation))
             }
@@ -407,7 +511,10 @@ impl App {
                     mem.compact_threshold(),
                     mem.keep_last_n(),
                 );
-                self.messages.push(ChatMessage::System { content });
+                self.messages.push(ChatMessage::System {
+                    content,
+                    timestamp: ChatMessage::now_timestamp(),
+                });
                 Some(None) // handled locally
             }
 
@@ -422,7 +529,10 @@ impl App {
                         .collect::<Vec<_>>()
                         .join("\n")
                 };
-                self.messages.push(ChatMessage::System { content });
+                self.messages.push(ChatMessage::System {
+                    content,
+                    timestamp: ChatMessage::now_timestamp(),
+                });
                 Some(None) // handled locally
             }
 
@@ -439,12 +549,15 @@ impl App {
                     "  Enter        — send message",
                     "  Shift+Enter  — newline",
                     "  PgUp/PgDown  — scroll chat",
-                    "  Up/Down      — input history",
+                    "  Up/Down      — input history / multi-line nav",
                     "  Ctrl+C       — cancel generation / exit",
                     "  Esc          — cancel generation",
                 ]
                 .join("\n");
-                self.messages.push(ChatMessage::System { content });
+                self.messages.push(ChatMessage::System {
+                    content,
+                    timestamp: ChatMessage::now_timestamp(),
+                });
                 Some(None)
             }
 
@@ -495,6 +608,10 @@ impl App {
 mod tests {
     use super::*;
 
+    fn ts() -> String {
+        "00:00:00".into()
+    }
+
     fn make_app() -> App {
         let memory = std::sync::Arc::new(std::sync::RwLock::new(crate::memory::Memory::new()));
         App::new("test-model", memory, vec!["echo".into(), "ls".into()])
@@ -510,7 +627,7 @@ mod tests {
         app.apply_event(AgentEvent::Token("Hello".into()));
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
-            ChatMessage::Assistant { content } => assert_eq!(content, "Hello"),
+            ChatMessage::Assistant { content, .. } => assert_eq!(content, "Hello"),
             other => panic!("expected Assistant, got {other:?}"),
         }
     }
@@ -523,7 +640,7 @@ mod tests {
         app.apply_event(AgentEvent::Token("lo".into()));
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
-            ChatMessage::Assistant { content } => assert_eq!(content, "Hello"),
+            ChatMessage::Assistant { content, .. } => assert_eq!(content, "Hello"),
             other => panic!("expected Assistant, got {other:?}"),
         }
     }
@@ -551,11 +668,11 @@ mod tests {
 
         assert_eq!(app.messages.len(), 3); // Before, ToolCall, After
         match &app.messages[0] {
-            ChatMessage::Assistant { content } => assert_eq!(content, "Before"),
+            ChatMessage::Assistant { content, .. } => assert_eq!(content, "Before"),
             other => panic!("expected Assistant, got {other:?}"),
         }
         match &app.messages[2] {
-            ChatMessage::Assistant { content } => assert_eq!(content, "After"),
+            ChatMessage::Assistant { content, .. } => assert_eq!(content, "After"),
             other => panic!("expected Assistant, got {other:?}"),
         }
     }
@@ -597,6 +714,7 @@ mod tests {
                 name,
                 args,
                 state,
+                ..
             } => {
                 assert_eq!(id, "abc");
                 assert_eq!(name, "ls");
@@ -618,7 +736,7 @@ mod tests {
         app.apply_event(AgentEvent::ReasoningToken("let me think...".into()));
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
-            ChatMessage::Reasoning { content } => {
+            ChatMessage::Reasoning { content, .. } => {
                 assert_eq!(content, "Hmm, let me think...");
             }
             other => panic!("expected Reasoning, got {other:?}"),
@@ -643,6 +761,7 @@ mod tests {
         let mut app = make_app();
         app.messages.push(ChatMessage::User {
             content: "old".into(),
+            timestamp: ts(),
         });
         app.input = "/clear".into();
         app.input_cursor = 6;
@@ -652,7 +771,7 @@ mod tests {
         // Local messages cleared, replaced with system confirmation
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
-            ChatMessage::System { content } => {
+            ChatMessage::System { content, .. } => {
                 assert!(content.contains("cleared"));
             }
             other => panic!("expected System, got {other:?}"),
@@ -670,7 +789,7 @@ mod tests {
         // welcome message + stats response
         assert_eq!(app.messages.len(), 2);
         match &app.messages[1] {
-            ChatMessage::System { content } => {
+            ChatMessage::System { content, .. } => {
                 assert!(content.contains("Messages"));
             }
             other => panic!("expected System, got {other:?}"),
@@ -692,7 +811,7 @@ mod tests {
         // welcome message + user message
         assert_eq!(app.messages.len(), 2);
         match &app.messages[1] {
-            ChatMessage::User { content } => assert_eq!(content, "hello"),
+            ChatMessage::User { content, .. } => assert_eq!(content, "hello"),
             other => panic!("expected User, got {other:?}"),
         }
     }

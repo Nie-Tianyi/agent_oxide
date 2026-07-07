@@ -8,8 +8,10 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, ChatMessage, ToolCallState};
+use super::markdown::render_markdown;
 
 // ── Layout ───────────────────────────────────────────────────────────────────────
 
@@ -25,7 +27,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 
     let layout = Layout::vertical([
         Constraint::Fill(1),   // chat
-        Constraint::Length(3), // input
+        Constraint::Length(5), // input (3 lines + border)
         Constraint::Length(1), // status bar
     ])
     .split(area);
@@ -35,12 +37,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_status(frame, layout[2], app);
 
     // Place the hardware cursor inside the input area.
-    frame.set_cursor_position((layout[1].x + 2 + app.cursor_column(), layout[1].y + 1));
+    // Account for multi-line input (vertical offset) and CJK width.
+    frame.set_cursor_position((
+        layout[1].x + 2 + app.cursor_column(),
+        layout[1].y + 1 + app.cursor_row(),
+    ));
 }
 
 // ── Chat Area ────────────────────────────────────────────────────────────────────
 
-/// Renders the scrollable conversation history.
+/// Renders the scrollable conversation history with a right-edge scrollbar.
 fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -59,7 +65,7 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
 
     let total_lines = all_lines.len();
 
-    // Compute scroll offset: 0 = show last lines, > 0 = scroll up
+    // Compute scroll offset
     let max_scroll = total_lines.saturating_sub(visible_height);
     let scroll = (max_scroll.saturating_sub(app.scroll_offset)).min(max_scroll) as u16;
 
@@ -69,57 +75,137 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
         .wrap(Wrap { trim: false });
 
     frame.render_widget(paragraph, area);
+
+    // ── Scrollbar ────────────────────────────────────────────────────
+    if max_scroll > 0 {
+        let scrollbar_area = Rect {
+            x: area.right().saturating_sub(1),
+            y: inner.y,
+            width: 1,
+            height: inner.height,
+        };
+
+        let thumb_pos = if total_lines == 0 {
+            0.0
+        } else {
+            (scroll as f64) / (total_lines as f64)
+        };
+        let thumb_size = (visible_height as f64 / total_lines as f64).clamp(0.1, 1.0);
+
+        let thumb_top = (thumb_pos * (visible_height as f64 - 1.0).max(0.0)).round() as u16;
+        let thumb_height = ((thumb_size * visible_height as f64).round() as u16).max(1);
+
+        for row in 0..inner.height {
+            let y = scrollbar_area.y + row;
+            if row >= thumb_top && row < thumb_top + thumb_height {
+                // Thumb (active position indicator)
+                frame.buffer_mut().set_string(
+                    scrollbar_area.x,
+                    y,
+                    "█",
+                    Style::default().fg(Color::DarkGray),
+                );
+            } else if row < thumb_top || row >= thumb_top + thumb_height {
+                // Track (inactive area)
+                frame.buffer_mut().set_string(
+                    scrollbar_area.x,
+                    y,
+                    "│",
+                    Style::default()
+                        .fg(Color::Rgb(60, 60, 60))
+                        .add_modifier(Modifier::DIM),
+                );
+            }
+        }
+    }
 }
 
 /// Converts one [`ChatMessage`] into styled ratatui [`Line`]s.
 ///
-/// Lines are **not** pre-wrapped — ratatui's `Paragraph` handles
-/// word-wrap automatically via `.wrap()`. We use `area_width` to
-/// estimate multi-line spans for the scroll offset calculation.
+/// Each message gets a dim timestamp prefix on its first line. Tool calls
+/// show the tool name prominently with args/output on a separate dim line.
 fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
+    // ── Timestamp style (shared across all variants) ───────────────
+    let ts_style = Style::default()
+        .fg(Color::DarkGray)
+        .add_modifier(Modifier::DIM);
+
     match msg {
-        ChatMessage::User { content } => {
-            vec![Line::from(vec![
-                Span::styled(
-                    "> ",
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(content.as_str(), Style::default().fg(Color::White)),
-            ])]
+        ChatMessage::User { content, timestamp } => {
+            let mut lines = Vec::new();
+            let content_lines: Vec<&str> = content.lines().collect();
+            for (i, line) in content_lines.iter().enumerate() {
+                if i == 0 {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{timestamp} "), ts_style),
+                        Span::styled(
+                            "> ",
+                            Style::default()
+                                .fg(Color::Cyan)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(*line, Style::default().fg(Color::White)),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::raw("       "), // align with timestamp + "> "
+                        Span::styled(*line, Style::default().fg(Color::White)),
+                    ]));
+                }
+            }
+            lines
         }
 
-        ChatMessage::Assistant { content } => content
-            .lines()
-            .map(|line| Line::from(Span::raw(line.to_string())))
-            .collect(),
+        ChatMessage::Assistant { content, timestamp } => {
+            let mut lines = render_markdown(content, area_width);
+            // Prepend timestamp to the first rendered line
+            if let Some(first) = lines.first_mut() {
+                let mut spans = vec![Span::styled(format!("{timestamp} "), ts_style)];
+                std::mem::swap(&mut first.spans, &mut spans);
+                spans.extend(std::mem::take(&mut first.spans));
+                first.spans = spans;
+            }
+            lines
+        }
 
-        ChatMessage::Reasoning { content } => content
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::DIM)
-                        .add_modifier(Modifier::ITALIC),
-                ))
-            })
-            .collect(),
+        ChatMessage::Reasoning { content, timestamp } => {
+            let reasoning_style = Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::DIM)
+                .add_modifier(Modifier::ITALIC);
+            let content_lines: Vec<&str> = content.lines().collect();
+            content_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(*line, reasoning_style),
+                        ])
+                    } else {
+                        Line::from(Span::styled(*line, reasoning_style))
+                    }
+                })
+                .collect()
+        }
 
         ChatMessage::ToolCall {
-            name, args, state, ..
+            name,
+            args,
+            state,
+            timestamp,
+            ..
         } => {
             let mut lines = Vec::new();
 
             match state {
                 ToolCallState::Running => {
-                    // Show the tool being called
+                    // Header line: timestamp + spinner + tool name
                     lines.push(Line::from(vec![
-                        Span::raw("  "),
+                        Span::styled(format!("{timestamp} "), ts_style),
                         Span::styled(
-                            "🔧 ",
+                            "◌ ",
                             Style::default()
                                 .fg(Color::Yellow)
                                 .add_modifier(Modifier::BOLD),
@@ -131,90 +217,159 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::raw(" "),
-                        // Truncate args for display (still streaming)
-                        Span::styled(
-                            truncate_args(args, area_width),
-                            Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
-                        ),
+                        Span::styled("(running…)", ts_style),
                     ]));
+                    // Args line (if present)
+                    if !args.is_empty() {
+                        lines.push(Line::from(vec![
+                            Span::raw("       "),
+                            Span::styled(
+                                truncate_args(args, area_width),
+                                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+                            ),
+                        ]));
+                    }
                 }
 
                 ToolCallState::Complete(output) => {
+                    // Header line: timestamp + checkmark + tool name
                     lines.push(Line::from(vec![
-                        Span::raw("  "),
-                        Span::styled("✓ ", Style::default().fg(Color::Green)),
+                        Span::styled(format!("{timestamp} "), ts_style),
+                        Span::styled(
+                            "✓ ",
+                            Style::default()
+                                .fg(Color::Green)
+                                .add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(
                             name.as_str(),
                             Style::default()
                                 .fg(Color::Green)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::raw(" → "),
-                        Span::styled(
-                            truncate_output(output, area_width),
-                            Style::default().fg(Color::Gray),
-                        ),
                     ]));
+                    // Output preview line (if present)
+                    if !output.is_empty() {
+                        let preview = truncate_output(output, area_width);
+                        if !preview.is_empty() {
+                            lines.push(Line::from(vec![
+                                Span::raw("       "),
+                                Span::styled(
+                                    preview,
+                                    Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+                                ),
+                            ]));
+                        }
+                    }
                 }
             }
 
             lines
         }
 
-        ChatMessage::System { content } => content
-            .lines()
-            .map(|line| {
-                Line::from(vec![
-                    Span::styled(
-                        "  ℹ ",
-                        Style::default()
-                            .fg(Color::Magenta)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(line.to_string()),
-                ])
-            })
-            .collect(),
+        ChatMessage::System { content, timestamp } => {
+            let content_lines: Vec<&str> = content.lines().collect();
+            content_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    let prefix = if i == 0 {
+                        vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(
+                                "ℹ ",
+                                Style::default()
+                                    .fg(Color::Magenta)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]
+                    } else {
+                        vec![Span::raw("       ")]
+                    };
+                    let mut spans = prefix;
+                    spans.push(Span::raw(*line));
+                    Line::from(spans)
+                })
+                .collect()
+        }
 
-        ChatMessage::Error { content } => content
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                ))
-            })
-            .collect(),
+        ChatMessage::Error { content, timestamp } => {
+            let error_style = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+            let content_lines: Vec<&str> = content.lines().collect();
+            content_lines
+                .iter()
+                .enumerate()
+                .map(|(i, line)| {
+                    if i == 0 {
+                        Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(*line, error_style),
+                        ])
+                    } else {
+                        Line::from(Span::styled(*line, error_style))
+                    }
+                })
+                .collect()
+        }
     }
 }
 
-/// Truncates streaming JSON args for compact inline display.
+/// Truncates streaming JSON args for compact inline display,
+/// using terminal display width so CJK characters are counted correctly.
 fn truncate_args(args: &str, width: u16) -> String {
     let max = (width as usize).saturating_sub(8).max(10);
     let one_line = args.replace('\n', " ");
-    if one_line.len() <= max {
+    let display_width = UnicodeWidthStr::width(one_line.as_str());
+    if display_width <= max {
         one_line
     } else {
-        let end = one_line.floor_char_boundary(max);
-        format!("{}…", &one_line[..end])
+        truncate_to_width(&one_line, max)
     }
 }
 
-/// Truncates tool output for compact inline display.
+/// Truncates tool output for compact inline display,
+/// using terminal display width so CJK characters are counted correctly.
 fn truncate_output(output: &str, width: u16) -> String {
     let max = (width as usize).saturating_sub(14).max(20);
     let one_line = output.replace('\n', " ");
-    if one_line.len() <= max {
+    let display_width = UnicodeWidthStr::width(one_line.as_str());
+    if display_width <= max {
         one_line
     } else {
-        let end = one_line.floor_char_boundary(max);
-        format!("{}…", &one_line[..end])
+        truncate_to_width(&one_line, max)
+    }
+}
+
+/// Truncates `text` to fit within `max_width` display columns,
+/// appending `…` when truncation occurs. Always cuts at a
+/// valid UTF-8 character boundary.
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    let ellipsis_width = 1; // '…' is 1 column wide
+    let limit = max_width.saturating_sub(ellipsis_width);
+    let mut current_width = 0usize;
+    let mut byte_end = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        let ch_width = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]));
+        if current_width + ch_width > limit {
+            break;
+        }
+        current_width += ch_width;
+        byte_end = idx + ch.len_utf8();
+    }
+
+    if byte_end == 0 {
+        "…".to_string()
+    } else {
+        format!("{}…", &text[..byte_end])
     }
 }
 
 // ── Input Area ───────────────────────────────────────────────────────────────────
 
 /// Renders the text input area with a border and cursor.
+/// Supports multi-line input — displays all lines, with cursor
+/// highlighting on the active line.
 fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     let style = if app.streaming {
         Style::default().fg(Color::Yellow)
@@ -233,135 +388,172 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
         .title(title)
         .border_style(style);
 
-    // Build the input line with cursor highlighting
     let cursor_style = if app.streaming {
         Style::default().bg(Color::DarkGray).fg(Color::White)
     } else {
         Style::default().bg(Color::White).fg(Color::Black)
     };
 
-    let display_line = build_input_line(app, cursor_style);
+    let display_lines = build_input_lines(app, cursor_style);
 
     // Show a hint when the input is empty
-    let lines = if app.input.is_empty() && !app.streaming {
-        let hint = vec![
+    let lines: Vec<Line<'_>> = if app.input.is_empty() && !app.streaming {
+        vec![
             Line::from(Span::raw("")),
             Line::from(Span::styled(
-                " Type a message and press Enter. /help for commands.",
-                Style::default()
-                    .fg(Color::DarkGray)
-                    .add_modifier(Modifier::DIM),
-            )),
-        ];
-        let p = Paragraph::new(hint).block(block);
-        frame.render_widget(p, area);
-        return;
-    } else if app.streaming && app.input.is_empty() {
-        vec![
-            display_line,
-            Line::from(Span::styled(
-                " Generating… press Esc to cancel.",
+                " Type a message and press Enter. Shift+Enter for newline. /help for commands.",
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
             )),
         ]
     } else {
-        vec![display_line]
+        display_lines
     };
 
     let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, area);
 }
 
-/// Builds the styled input line: `"> "` prompt + text with cursor highlight.
-fn build_input_line(app: &App, cursor_style: Style) -> Line<'_> {
-    let mut spans: Vec<Span<'_>> = Vec::new();
-
-    spans.push(Span::styled(
-        "> ",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    ));
-
+/// Builds the styled input lines: `"> "` prompt prefix on each line,
+/// with cursor highlighting on the active line.
+fn build_input_lines(app: &App, cursor_style: Style) -> Vec<Line<'_>> {
     let input = &app.input;
     let cursor = app.input_cursor;
+    let mut lines: Vec<Line<'_>> = Vec::new();
 
-    // Before cursor
-    if cursor > 0 {
-        spans.push(Span::raw(&input[..cursor]));
-    }
+    // Find which line the cursor is on
+    let cursor_line_idx = input[..cursor].chars().filter(|&c| c == '\n').count();
 
-    // Cursor character
-    if cursor < input.len() {
-        let ch = input[cursor..].chars().next().unwrap_or(' ');
-        spans.push(Span::styled(ch.to_string(), cursor_style));
-        // After cursor
-        let after_start = cursor + ch.len_utf8();
-        if after_start < input.len() {
-            spans.push(Span::raw(&input[after_start..]));
+    for (line_idx, text_line) in input.lines().enumerate() {
+        let line_start = input
+            .lines()
+            .take(line_idx)
+            .map(|l| l.len() + 1) // +1 for the \n
+            .sum::<usize>();
+
+        let mut spans: Vec<Span<'_>> = Vec::new();
+
+        // Prompt prefix on every line
+        spans.push(Span::styled(
+            "> ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
+
+        if line_idx == cursor_line_idx {
+            // This line contains the cursor
+            let cursor_in_line = cursor - line_start;
+
+            // Text before cursor
+            if cursor_in_line > 0 && cursor_in_line <= text_line.len() {
+                spans.push(Span::raw(&text_line[..cursor_in_line.min(text_line.len())]));
+            }
+
+            // Cursor character
+            if cursor_in_line < text_line.len() {
+                let ch = text_line[cursor_in_line..].chars().next().unwrap_or(' ');
+                spans.push(Span::styled(ch.to_string(), cursor_style));
+                let after_start = cursor_in_line + ch.len_utf8();
+                if after_start < text_line.len() {
+                    spans.push(Span::raw(&text_line[after_start..]));
+                }
+            } else {
+                // Cursor at end of line — show a space
+                spans.push(Span::styled(" ", cursor_style));
+            }
+        } else {
+            // Plain text line
+            spans.push(Span::raw(text_line));
         }
-    } else {
-        // Cursor at end — show a space
-        spans.push(Span::styled(" ", cursor_style));
+
+        lines.push(Line::from(spans));
     }
 
-    Line::from(spans)
+    if lines.is_empty() {
+        // No content — show cursor on empty first line
+        lines.push(Line::from(vec![
+            Span::styled(
+                "> ",
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" ", cursor_style),
+        ]));
+    }
+
+    lines
 }
 
 // ── Status Bar ───────────────────────────────────────────────────────────────────
 
-/// Renders the single-line status bar at the bottom.
+/// Renders the single-line status bar at the bottom with better styling.
 fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
-    let (left, right) = build_status_content(app);
+    let bg_color = Color::Rgb(30, 40, 50);
+    let fg_color = Color::Rgb(180, 190, 200);
+    let accent = if app.streaming {
+        Color::Rgb(255, 180, 50)
+    } else {
+        Color::Rgb(80, 200, 120)
+    };
 
-    // Fill gap between left and right
+    let (left, right, accent_text) = build_status_content(app);
+
     let left_width = left.len();
+    let accent_width = accent_text.len();
     let right_width = right.len();
     let total_space = area.width as usize;
 
-    let gap = if left_width + right_width < total_space {
-        total_space - left_width - right_width
+    let gap = if left_width + accent_width + right_width < total_space {
+        total_space - left_width - accent_width - right_width
     } else {
         1
     };
 
     let line = Line::from(vec![
-        Span::styled(left, Style::default().fg(Color::Black).bg(Color::Cyan)),
-        Span::styled(
-            " ".repeat(gap),
-            Style::default().fg(Color::Black).bg(Color::Cyan),
-        ),
-        Span::styled(right, Style::default().fg(Color::Black).bg(Color::Cyan)),
+        Span::styled(left, Style::default().fg(fg_color).bg(bg_color)),
+        Span::styled(" ".repeat(gap), Style::default().fg(fg_color).bg(bg_color)),
+        Span::styled(accent_text, Style::default().fg(accent).bg(bg_color)),
+        Span::styled(right, Style::default().fg(Color::DarkGray).bg(bg_color)),
     ]);
 
     let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
 }
 
-/// Builds the left and right portions of the status bar.
-fn build_status_content(app: &App) -> (String, String) {
+/// Builds the left, accent, and right portions of the status bar.
+fn build_status_content(app: &App) -> (String, String, String) {
     let model = &app.model;
     let msgs = app.messages.len();
 
-    let left = format!(" {model} | {} msgs ", msgs);
+    let left = format!(" {} | {} msgs ", model, msgs);
 
-    let streaming_indicator = if app.streaming {
-        "⚡ streaming"
+    let (accent, right) = if app.streaming {
+        let indicator = " ⚡ STREAMING ";
+        let right = format!(
+            "PgUp/Dn scroll{}  ",
+            if app.scroll_offset > 0 {
+                format!(" ↑{}", app.scroll_offset)
+            } else {
+                String::new()
+            }
+        );
+        (indicator.to_string(), right)
     } else {
-        "idle"
+        let right = format!(
+            "{}  ",
+            if app.scroll_offset > 0 {
+                format!("↑{} scrolled", app.scroll_offset)
+            } else {
+                String::new()
+            }
+        );
+        (String::new(), right)
     };
 
-    let scroll_info = if app.scroll_offset > 0 {
-        format!(" | scrolled ↑{}", app.scroll_offset)
-    } else {
-        String::new()
-    };
-
-    let right = format!("{streaming_indicator}{scroll_info}  ");
-
-    (left, right)
+    (left, accent, right)
 }
 
 // ── Line Count Estimation ────────────────────────────────────────────────────────
@@ -385,29 +577,46 @@ impl App {
         self.line_counts.iter().sum()
     }
 
-    /// Returns the visual column of the cursor within the input line.
+    /// Returns the visual column of the cursor within the input line,
+    /// accounting for CJK double-width characters.
     pub fn cursor_column(&self) -> u16 {
-        // Count chars before cursor (not bytes)
-        let prefix_len = 2; // "> " prompt
-        let col = if self.input_cursor == 0 {
+        let prefix_len = 2u16; // "> " prompt
+
+        // For multi-line input, find the start of the current line
+        let line_start = self.input[..self.input_cursor]
+            .rfind('\n')
+            .map(|p| p + 1)
+            .unwrap_or(0);
+
+        let col = if self.input_cursor <= line_start {
             0
         } else {
-            self.input[..self.input_cursor].chars().count()
+            UnicodeWidthStr::width(&self.input[line_start..self.input_cursor]) as u16
         };
-        (prefix_len + col) as u16
+        prefix_len + col
+    }
+
+    /// Returns the row offset of the cursor within a multi-line input
+    /// (0 = first line). Used for vertical cursor placement.
+    pub fn cursor_row(&self) -> u16 {
+        self.input[..self.input_cursor]
+            .chars()
+            .filter(|&c| c == '\n')
+            .count() as u16
     }
 }
 
 /// Heuristic: count `\n` + estimate wrapped lines.
+/// Uses terminal display width so CJK characters are counted as 2 columns.
 fn estimate_lines(msg: &ChatMessage, width: u16) -> usize {
     let w = width.max(1) as usize;
 
     let raw = match msg {
-        ChatMessage::User { content } => {
+        ChatMessage::User { content, .. } => {
             format!("> {content}")
         }
-        ChatMessage::Assistant { content } => content.clone(),
-        ChatMessage::Reasoning { content } => content.clone(),
+        ChatMessage::Assistant { content, .. } => content.clone(),
+        ChatMessage::Reasoning { content, .. } => content.clone(),
         ChatMessage::ToolCall {
             name, args, state, ..
         } => match state {
@@ -416,8 +625,8 @@ fn estimate_lines(msg: &ChatMessage, width: u16) -> usize {
                 format!("  ✓ {name} → {output}")
             }
         },
-        ChatMessage::System { content } => format!("  ℹ {content}"),
-        ChatMessage::Error { content } => content.clone(),
+        ChatMessage::System { content, .. } => format!("  ℹ {content}"),
+        ChatMessage::Error { content, .. } => content.clone(),
     };
 
     let mut lines = 0usize;
@@ -425,7 +634,9 @@ fn estimate_lines(msg: &ChatMessage, width: u16) -> usize {
         if line.is_empty() {
             lines += 1;
         } else {
-            lines += line.len().max(1).div_ceil(w);
+            // Use Unicode display width, not byte length
+            let display_width = UnicodeWidthStr::width(line).max(1);
+            lines += display_width.div_ceil(w);
         }
     }
     lines.max(1)
@@ -437,10 +648,15 @@ fn estimate_lines(msg: &ChatMessage, width: u16) -> usize {
 mod tests {
     use super::*;
 
+    fn ts() -> String {
+        "00:00:00".into()
+    }
+
     #[test]
     fn test_estimate_lines_empty() {
         let msg = ChatMessage::Assistant {
             content: String::new(),
+            timestamp: ts(),
         };
         assert_eq!(estimate_lines(&msg, 80), 1); // at least 1
     }
@@ -449,6 +665,7 @@ mod tests {
     fn test_estimate_lines_short() {
         let msg = ChatMessage::User {
             content: "hi".into(),
+            timestamp: ts(),
         };
         assert_eq!(estimate_lines(&msg, 80), 1);
     }
@@ -457,6 +674,7 @@ mod tests {
     fn test_estimate_lines_newlines() {
         let msg = ChatMessage::Assistant {
             content: "line1\nline2\nline3".into(),
+            timestamp: ts(),
         };
         assert_eq!(estimate_lines(&msg, 80), 3);
     }
@@ -465,9 +683,25 @@ mod tests {
     fn test_estimate_lines_wrapping() {
         let msg = ChatMessage::Assistant {
             content: "a".repeat(200),
+            timestamp: ts(),
         };
         // 200 chars at width 80 → ceil(200/80) = 3
         assert_eq!(estimate_lines(&msg, 80), 3);
+    }
+
+    #[test]
+    fn test_cjk_estimate_lines() {
+        // Chinese characters are 2 columns wide but 3 bytes each in UTF-8.
+        // 10 Chinese chars = 30 bytes but 20 columns wide.
+        let msg = ChatMessage::Assistant {
+            content: "你好世界你好世界你好世界你好世界你好世界".into(), // 20 chars, 60 bytes, 40 cols
+            timestamp: ts(),
+        };
+        // 40 columns at width 80 → 1 line (was 60/80=1 with byte length, same in this case)
+        assert_eq!(estimate_lines(&msg, 80), 1);
+
+        // Now test narrow width: 40 cols at width 30 → ceil(40/30) = 2
+        assert_eq!(estimate_lines(&msg, 30), 2);
     }
 
     #[test]

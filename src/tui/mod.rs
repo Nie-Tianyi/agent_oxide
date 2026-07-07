@@ -28,6 +28,7 @@
 
 mod app;
 mod event;
+mod markdown;
 mod ui;
 
 pub use app::{App, ChatMessage, ToolCallState, TuiCommand};

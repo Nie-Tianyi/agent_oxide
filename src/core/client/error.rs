@@ -21,4 +21,11 @@ impl std::fmt::Display for DeepSeekError {
     }
 }
 
-impl std::error::Error for DeepSeekError {}
+impl std::error::Error for DeepSeekError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Http(e) => Some(e),
+            _ => None,
+        }
+    }
+}

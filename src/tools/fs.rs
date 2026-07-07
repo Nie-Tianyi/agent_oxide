@@ -203,6 +203,10 @@ impl WorkspaceFs {
         }
 
         let content = fs::read_to_string(&resolved).map_err(FsError::Io)?;
+
+        // Detect the file's line-end style so we preserve it.
+        let line_end = detect_line_end(&content);
+
         let lines: Vec<&str> = content.lines().collect();
 
         let start_idx = start - 1; // 转为 0-indexed
@@ -227,11 +231,11 @@ impl WorkspaceFs {
             new_lines.push(line.to_string());
         }
 
-        let new_file = new_lines.join("\n");
+        let new_file = new_lines.join(&line_end);
 
         // 如果原文件以换行结尾，则新文件也保持
         let new_file = if content.ends_with('\n') && !new_file.ends_with('\n') {
-            new_file + "\n"
+            new_file + &line_end
         } else {
             new_file
         };
@@ -380,10 +384,23 @@ pub struct GrepMatch {
 
 // ── 内部辅助函数 ──────────────────────────────────────────────────────────
 
+/// Detect the line-ending style used in `text`.
+///
+/// Returns `"\r\n"` if any CRLF sequence is found, otherwise `"\n"`.
+/// This ensures `edit_lines` preserves the file's original line style.
+fn detect_line_end(text: &str) -> String {
+    if text.contains("\r\n") {
+        "\r\n".to_string()
+    } else {
+        "\n".to_string()
+    }
+}
+
 /// 对不存在的文件做部分路径规范化。
 ///
 /// 找到路径中最长的已存在前缀并 canonicalize，
-/// 然后拼接剩余部分（处理 `..` 和 `.` 组件）。
+/// 然后拼接剩余部分。途中遇到 `..` 会从规范化前缀中移除最后一级，
+/// 遇到 `.` 则直接跳过，从而防止 `..` 逃逸出 workspace。
 fn normalize_partial(path: &Path) -> Result<PathBuf, FsError> {
     // Walk up from the path to find the first existing ancestor,
     // canonicalize it, then re-append the non-existent tail.
@@ -394,8 +411,19 @@ fn normalize_partial(path: &Path) -> Result<PathBuf, FsError> {
         if existing.exists() {
             let canon = existing.canonicalize().map_err(FsError::Io)?;
             let mut result = canon;
+            // Re-apply tail components, resolving `..` and `.` to prevent
+            // path-traversal attacks through non-existent intermediate dirs.
             for comp in tail_components.iter().rev() {
-                result.push(comp);
+                if comp == std::path::Path::new("..") {
+                    // `..` escapes upward — pop from the canonicalized prefix.
+                    // Guard against popping past the filesystem root.
+                    if result.parent().is_some() {
+                        result.pop();
+                    }
+                } else if comp != std::path::Path::new(".") {
+                    result.push(comp);
+                }
+                // `.` is a no-op — skip it.
             }
             return Ok(result);
         }
@@ -453,6 +481,22 @@ mod tests {
         fs::create_dir(&sub).unwrap();
         let result = fs.read("sub/../../../etc/passwd", None, None);
         assert!(matches!(result, Err(FsError::PathEscapesWorkspace(_))));
+    }
+
+    /// Regression: path traversal through a non-existent intermediate
+    /// directory should be caught by `normalize_partial` resolving `..`
+    /// components rather than treating them as literal path segments.
+    #[test]
+    fn test_path_traversal_via_nonexistent_dir() {
+        let (_dir, fs) = setup_fs();
+        let result = fs.write(
+            "nonexistent/../../../Windows/System32/evil.exe",
+            "malicious",
+        );
+        assert!(
+            matches!(result, Err(FsError::PathEscapesWorkspace(_))),
+            "traversal via nonexistent dir should be rejected; got {result:?}"
+        );
     }
 
     // ── read ─────────────────────────────────────────────────
@@ -634,9 +678,10 @@ mod tests {
         fs.write("test.rs", "").unwrap();
 
         let results = fs.glob("**/*.rs").unwrap();
-        assert!(results.contains(&"src/lib.rs".to_string()));
-        assert!(results.contains(&"src/main.rs".to_string()));
-        assert!(results.contains(&"test.rs".to_string()));
+        let normalized: Vec<String> = results.iter().map(|p| p.replace('\\', "/")).collect();
+        assert!(normalized.contains(&"src/lib.rs".to_string()));
+        assert!(normalized.contains(&"src/main.rs".to_string()));
+        assert!(normalized.contains(&"test.rs".to_string()));
     }
 
     #[test]
@@ -669,7 +714,8 @@ mod tests {
 
         let results = fs.grep("fn", Some("src/**/*.rs")).unwrap();
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].file_path, "src/a.rs");
+        let path = results[0].file_path.replace('\\', "/");
+        assert_eq!(path, "src/a.rs");
     }
 
     #[test]

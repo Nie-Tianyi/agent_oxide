@@ -110,7 +110,7 @@ fn format_size(bytes: u64) -> String {
     if unit_idx == 0 {
         format!("{}", bytes)
     } else {
-        format!("{size:.1}{}", UNITS[unit_idx])
+        format!("{size:.1} {}", UNITS[unit_idx])
     }
 }
 

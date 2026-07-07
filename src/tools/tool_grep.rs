@@ -157,8 +157,9 @@ mod tests {
         let result = tool
             .execute(r#"{"pattern": "fn", "path_glob": "src/**/*.rs"}"#)
             .unwrap();
-        assert!(result.contains("src/lib.rs"));
-        assert!(!result.contains("tests/"));
+        let normalized = result.replace('\\', "/");
+        assert!(normalized.contains("src/lib.rs"));
+        assert!(!normalized.contains("tests/"));
     }
 
     #[test]

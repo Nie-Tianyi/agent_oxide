@@ -340,5 +340,9 @@ fn truncate_path(path: &std::path::Path, max_len: usize) -> String {
     if s.len() <= max_len {
         return s;
     }
-    format!("...{}", &s[s.len().saturating_sub(max_len - 3)..])
+    let start = s.len().saturating_sub(max_len - 3);
+    // Find a valid UTF-8 char boundary at or after start to avoid panicking
+    // on multi-byte characters.
+    let boundary = s.ceil_char_boundary(start);
+    format!("...{}", &s[boundary..])
 }

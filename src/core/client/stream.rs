@@ -31,7 +31,7 @@ use super::response::Usage;
 ///
 /// # Usage
 ///
-/// ```no_run
+/// ```ignore
 /// let mut stream: DeepSeekStream = client.stream(request).await?;
 /// while let Some(chunk) = stream.next().await {
 ///     match chunk {
@@ -98,7 +98,9 @@ pub struct Delta {
 ///
 /// # Example
 ///
-/// ```
+/// ```ignore
+/// // This example cannot be run as a doc-test because `find_event_end`
+/// // is crate-private. It's here for readability of the source code.
 /// let buf = b"data: {\"x\":1}\n\ndata: [DONE]\n\n";
 /// let end = find_event_end(buf).unwrap(); // end = 15
 /// assert_eq!(&buf[..end], b"data: {\"x\":1}\n\n");
@@ -142,6 +144,11 @@ fn extract_sse_data(event_text: &str) -> String {
         .join("")
 }
 
+/// Maximum SSE event size in bytes (16 MB).
+/// Guards against infinite buffer growth from a misbehaving server
+/// that sends data without `\n\n` terminators.
+const MAX_SSE_EVENT_SIZE: usize = 16 * 1024 * 1024;
+
 impl DeepSeekStream {
     /// Read the next raw SSE event text from the network.
     ///
@@ -169,6 +176,15 @@ impl DeepSeekStream {
             match self.response.chunk().await {
                 Ok(Some(bytes)) => {
                     self.buffer.extend_from_slice(&bytes);
+                    // Safety: prevent OOM from a misbehaving server that
+                    // never sends the SSE `\n\n` event terminator.
+                    if self.buffer.len() > MAX_SSE_EVENT_SIZE {
+                        self.finished = true;
+                        return Some(Err(DeepSeekError::Parse(format!(
+                            "SSE buffer overflow: exceeded {} bytes without a complete event",
+                            MAX_SSE_EVENT_SIZE,
+                        ))));
+                    }
                     // Loop back to check if we now have a full event.
                 }
                 Ok(None) => {

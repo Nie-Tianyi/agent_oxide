@@ -15,6 +15,15 @@
 //! for `name == "shell"` and prompts the user for confirmation via the TUI
 //! before calling `execute()`. When no confirmation infrastructure is present
 //! (e.g. `--no-tui` mode), the tool executes unconditionally.
+//!
+//! ## Known limitation: blocking `execute`
+//!
+//! Because [`Tool::execute`] is synchronous, `ShellTool::execute` blocks
+//! the calling tokio worker thread for the entire duration of
+//! `wait_with_output()` (up to the configured timeout). This is acceptable
+//! for short commands but may stall the runtime for long-running builds.
+//! Future versions may migrate to `tokio::task::spawn_blocking` or an
+//! async `Tool` trait.
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};

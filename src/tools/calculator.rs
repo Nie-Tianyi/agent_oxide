@@ -218,6 +218,15 @@ impl Lexer {
         }
 
         let num_str: String = self.chars[start..self.pos].iter().collect();
+
+        // Reject malformed numbers: "." alone, or numbers with multiple dots like "1..5"
+        if num_str == "." {
+            return Token::Number(f64::NAN);
+        }
+        if num_str.matches('.').count() > 1 {
+            return Token::Number(f64::NAN);
+        }
+
         let num = num_str.parse::<f64>().unwrap_or(f64::NAN);
         Token::Number(num)
     }

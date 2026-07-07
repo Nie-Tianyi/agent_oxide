@@ -67,6 +67,10 @@ pub struct Message {
     /// Present when role is `tool` — the id of the tool call this message responds to.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    /// Optional name of the tool that produced this result (role `tool`),
+    /// or the participant name for role `user`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 impl Message {
@@ -76,6 +80,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
+            name: None,
         }
     }
 
@@ -85,6 +90,7 @@ impl Message {
             content: content.into(),
             tool_calls: Some(tool_calls),
             tool_call_id: None,
+            name: None,
         }
     }
 
@@ -94,6 +100,7 @@ impl Message {
             content: content.into(),
             tool_calls: None,
             tool_call_id: Some(tool_call_id.into()),
+            name: None,
         }
     }
 }

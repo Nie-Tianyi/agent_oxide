@@ -61,7 +61,7 @@
 //!
 //! // 2. Create the agent (streaming by default)
 //! let agent = Agent::new(client, memory.clone(), Arc::new(registry))
-//!     .with_model("deepseek-chat")
+//!     .with_model("deepseek-v4-flash")
 //!     .with_max_steps(10);
 //!
 //! // 3. Seed the conversation
@@ -113,6 +113,14 @@ use crate::tools::ToolRegistry;
 /// sender when the user presses Y or n.
 ///
 /// `true` = approved, `false` = denied.
+///
+/// # Known race
+///
+/// Between agent cleanup (removing the entry after timeout/response) and TUI
+/// sending a response, the TUI may `send()` on an already-dropped `Sender`.
+/// This is harmless — `send()` returns `Err` and the TUI ignores it — but
+/// a future version could add a `log` or `tracing` warning when a stale
+/// confirmation arrives.
 pub type PendingConfirmations = Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>;
 
 // ── AgentError ──────────────────────────────────────────────────────────────────
@@ -296,6 +304,15 @@ impl StreamAccumulator {
                     // Later chunks have empty strings — we skip those so we
                     // don't overwrite the id/name with blanks.
                     if !tc.id.is_empty() {
+                        // Detect index collision: two different call IDs
+                        // assigned the same index (API protocol error).
+                        if !entry.id.is_empty() && entry.id != tc.id {
+                            eprintln!(
+                                "WARN: StreamAccumulator index collision: \
+                                 index {} had id '{}', overwriting with '{}'",
+                                tc.index, entry.id, tc.id,
+                            );
+                        }
                         entry.id = tc.id.clone();
                     }
                     if !tc.function.name.is_empty() {
@@ -392,7 +409,7 @@ impl Agent {
     ///
     /// | Setting | Default | Meaning |
     /// |---------|--------|---------|
-    /// | `model` | `"deepseek-chat"` | Model sent in each API request |
+    /// | `model` | `"deepseek-v4-flash"`        | Model sent in each API request |
     /// | `max_steps` | `10` | Safety cap — maximum loop iterations |
     /// | `max_retries` | `3` | Retry attempts for transient failures |
     /// | `streaming` | `true` | Use SSE streaming by default |
@@ -468,7 +485,7 @@ impl Agent {
     ///
     /// ```ignore
     /// let agent = Agent::new(client, mem, reg)
-    ///     .with_compact_model("deepseek-chat");
+    ///     .with_compact_model("deepseek-v4-flash");
     /// ```
     pub fn with_compact_model(mut self, model: impl Into<String>) -> Self {
         self.compact_model = Some(model.into());
@@ -1015,9 +1032,11 @@ impl Agent {
             }
         }
 
-        // SAFETY: last_err is always Some here — we only reach this
-        // point after at least one retryable error.
-        Err(AgentError::DeepSeek(last_err.unwrap()))
+        // If max_retries is 0 and the loop body never executed, last_err is None.
+        // Use a fallback error to avoid panicking.
+        Err(AgentError::DeepSeek(last_err.unwrap_or_else(|| {
+            DeepSeekError::Parse("max_retries is 0; no attempts were made".into())
+        })))
     }
 
     /// Opens a streaming SSE connection with exponential-backoff retry.
@@ -1047,8 +1066,9 @@ impl Agent {
             }
         }
 
-        // SAFETY: last_err is always Some here — see send_with_retry.
-        Err(AgentError::DeepSeek(last_err.unwrap()))
+        Err(AgentError::DeepSeek(last_err.unwrap_or_else(|| {
+            DeepSeekError::Parse("max_retries is 0; no attempts were made".into())
+        })))
     }
 }
 
@@ -1077,9 +1097,14 @@ impl Agent {
             return Ok(());
         }
 
-        // Phase 1: drain under write lock
+        // Phase 1: drain under write lock — re-check threshold inside
+        // the lock to avoid TOCTOU: new messages may have been pushed
+        // between the read-lock check above and this write-lock acquisition.
         let drained = {
             let mut mem = self.memory.write().unwrap();
+            if !mem.needs_compact() {
+                return Ok(());
+            }
             mem.drain_for_compact()
         };
 
@@ -1187,7 +1212,7 @@ mod tests {
             id: "test-chunk".into(),
             object: "chat.completion.chunk".into(),
             created: 0,
-            model: "deepseek-chat".into(),
+            model: "deepseek-v4-flash".into(),
             choices: vec![ChunkChoice {
                 index: 0,
                 delta: Delta {
@@ -1219,7 +1244,7 @@ mod tests {
     #[test]
     fn test_agent_new_defaults() {
         let agent = make_agent();
-        assert_eq!(agent.model, "deepseek-chat");
+        assert_eq!(agent.model, "deepseek-v4-flash");
         assert_eq!(agent.max_steps, 10);
         assert_eq!(agent.max_retries, 3);
         assert!(agent.streaming, "streaming should be on by default");
@@ -1237,19 +1262,19 @@ mod tests {
             .with_max_steps(5)
             .with_max_retries(2)
             .with_streaming(false)
-            .with_compact_model("deepseek-chat");
+            .with_compact_model("deepseek-v4-flash");
 
         assert_eq!(agent.model, "deepseek-v4-pro");
         assert_eq!(agent.max_steps, 5);
         assert_eq!(agent.max_retries, 2);
         assert!(!agent.streaming);
-        assert_eq!(agent.compact_model.as_deref(), Some("deepseek-chat"));
+        assert_eq!(agent.compact_model.as_deref(), Some("deepseek-v4-flash"));
     }
 
     #[test]
     fn test_agent_builder_default_model() {
         let agent = make_agent();
-        assert_eq!(agent.model, "deepseek-chat");
+        assert_eq!(agent.model, "deepseek-v4-flash");
     }
 
     #[test]
@@ -1504,7 +1529,7 @@ mod tests {
 
         let request = agent.build_request();
         assert_eq!(request.messages.len(), 2);
-        assert_eq!(request.model, "deepseek-chat");
+        assert_eq!(request.model, "deepseek-v4-flash");
         assert!(!request.stream, "build_request should not set stream");
     }
 

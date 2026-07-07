@@ -131,9 +131,10 @@ mod tests {
         write_file(&dir, "tests/c.rs", "");
 
         let result = tool.execute(r#"{"pattern": "**/*.rs"}"#).unwrap();
-        assert!(result.contains("src/a.rs"));
-        assert!(result.contains("src/deep/b.rs"));
-        assert!(result.contains("tests/c.rs"));
+        let normalized = result.replace('\\', "/");
+        assert!(normalized.contains("src/a.rs"));
+        assert!(normalized.contains("src/deep/b.rs"));
+        assert!(normalized.contains("tests/c.rs"));
     }
 
     #[test]

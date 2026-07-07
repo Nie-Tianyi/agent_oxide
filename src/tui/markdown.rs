@@ -257,15 +257,18 @@ impl<'a> MdRenderer<'a> {
                         .fg(Color::DarkGray)
                         .add_modifier(Modifier::DIM),
                 ); // URL style
-                  // Push the URL string onto... hmm. We need a different approach.
-                  // Let's handle links differently: render text + URL inline.
-                  // For now, just style the text as a link and prepend URL info.
+                // Push the URL string onto... hmm. We need a different approach.
+                // Let's handle links differently: render text + URL inline.
+                // For now, just style the text as a link and prepend URL info.
             }
 
             Tag::Image { .. } => {
                 // Images: just show placeholder
-                self.style_stack
-                    .push(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+                self.style_stack.push(
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
+                );
             }
 
             Tag::FootnoteDefinition(_) => {
@@ -330,7 +333,10 @@ impl<'a> MdRenderer<'a> {
                     let last_empty = self
                         .lines
                         .last()
-                        .map(|l| l.spans.is_empty() || l.spans.len() == 1 && l.spans[0].content.is_empty())
+                        .map(|l| {
+                            l.spans.is_empty()
+                                || l.spans.len() == 1 && l.spans[0].content.is_empty()
+                        })
                         .unwrap_or(true);
                     if !last_empty {
                         self.lines.push(Line::from(Span::raw("")));
@@ -408,10 +414,8 @@ impl<'a> MdRenderer<'a> {
             .fg(Color::Rgb(200, 200, 180))
             .bg(INLINE_CODE_BG);
 
-        self.current_spans.push(Span::styled(
-            format!(" {text} "),
-            style,
-        ));
+        self.current_spans
+            .push(Span::styled(format!(" {text} "), style));
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
@@ -423,7 +427,9 @@ impl<'a> MdRenderer<'a> {
                 // Code block lines get a dim margin
                 self.current_spans.push(Span::styled(
                     "  ",
-                    Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM),
+                    Style::default()
+                        .fg(Color::DarkGray)
+                        .add_modifier(Modifier::DIM),
                 ));
             }
             BlockCtx::BlockQuote => {
@@ -434,7 +440,8 @@ impl<'a> MdRenderer<'a> {
                     } else {
                         Color::DarkGray
                     };
-                    self.current_spans.push(Span::styled("▎", Style::default().fg(color)));
+                    self.current_spans
+                        .push(Span::styled("▎", Style::default().fg(color)));
                     self.current_spans.push(Span::raw(" "));
                 }
             }
@@ -460,9 +467,9 @@ impl<'a> MdRenderer<'a> {
     /// Compute the effective style by folding the style stack over the base.
     fn compute_current_style(&self) -> Style {
         let mut style = match self.block {
-            BlockCtx::CodeBlock { .. } => Style::default()
-                .fg(Color::Rgb(200, 200, 180))
-                .bg(CODE_BG),
+            BlockCtx::CodeBlock { .. } => {
+                Style::default().fg(Color::Rgb(200, 200, 180)).bg(CODE_BG)
+            }
             BlockCtx::BlockQuote => self.base_style.fg(QUOTE_TEXT_COLOR),
             _ => self.base_style,
         };
@@ -496,8 +503,7 @@ impl<'a> MdRenderer<'a> {
 
         // Trim trailing blank lines
         while self.lines.last().is_some_and(|l| {
-            l.spans.is_empty()
-                || l.spans.iter().all(|s| s.content.trim().is_empty())
+            l.spans.is_empty() || l.spans.iter().all(|s| s.content.trim().is_empty())
         }) {
             self.lines.pop();
         }
@@ -527,14 +533,14 @@ mod tests {
     fn test_bold_and_italic() {
         let lines = render_markdown("This is **bold** and *italic* text.", 80);
         let has_bold = lines.iter().any(|l| {
-            l.spans.iter().any(|s| {
-                s.style.add_modifier.contains(Modifier::BOLD)
-            })
+            l.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::BOLD))
         });
         let has_italic = lines.iter().any(|l| {
-            l.spans.iter().any(|s| {
-                s.style.add_modifier.contains(Modifier::ITALIC)
-            })
+            l.spans
+                .iter()
+                .any(|s| s.style.add_modifier.contains(Modifier::ITALIC))
         });
         assert!(has_bold, "bold modifier missing");
         assert!(has_italic, "italic modifier missing");
@@ -543,11 +549,9 @@ mod tests {
     #[test]
     fn test_inline_code() {
         let lines = render_markdown("Use `cargo build` to compile.", 80);
-        let has_code_bg = lines.iter().any(|l| {
-            l.spans.iter().any(|s| {
-                s.style.bg == Some(INLINE_CODE_BG)
-            })
-        });
+        let has_code_bg = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.style.bg == Some(INLINE_CODE_BG)));
         assert!(has_code_bg, "inline code background missing");
     }
 
@@ -555,11 +559,9 @@ mod tests {
     fn test_code_block() {
         let md = "```rust\nfn main() {\n    println!(\"hello\");\n}\n```";
         let lines = render_markdown(md, 80);
-        let has_code = lines.iter().any(|l| {
-            l.spans.iter().any(|s| {
-                s.content.contains("fn main")
-            })
-        });
+        let has_code = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("fn main")));
         assert!(has_code, "code block content missing");
     }
 
@@ -568,8 +570,7 @@ mod tests {
         let lines = render_markdown("# Hello World", 80);
         let has_bold_heading = lines.iter().any(|l| {
             l.spans.iter().any(|s| {
-                s.style.add_modifier.contains(Modifier::BOLD)
-                    && s.content.contains("Hello World")
+                s.style.add_modifier.contains(Modifier::BOLD) && s.content.contains("Hello World")
             })
         });
         assert!(has_bold_heading, "heading style missing");
@@ -579,9 +580,10 @@ mod tests {
     fn test_unordered_list() {
         let md = "- item one\n- item two\n- item three";
         let lines = render_markdown(md, 80);
-        let bullet_count = lines.iter().filter(|l| {
-            l.spans.iter().any(|s| s.content.contains('•'))
-        }).count();
+        let bullet_count = lines
+            .iter()
+            .filter(|l| l.spans.iter().any(|s| s.content.contains('•')))
+            .count();
         assert_eq!(bullet_count, 3, "expected 3 bullet items");
     }
 
@@ -589,29 +591,32 @@ mod tests {
     fn test_ordered_list() {
         let md = "1. first\n2. second\n3. third";
         let lines = render_markdown(md, 80);
-        let numbered: Vec<_> = lines.iter().filter(|l| {
-            l.spans.iter().any(|s| {
-                s.content.contains("1.") || s.content.contains("2.") || s.content.contains("3.")
+        let numbered: Vec<_> = lines
+            .iter()
+            .filter(|l| {
+                l.spans.iter().any(|s| {
+                    s.content.contains("1.") || s.content.contains("2.") || s.content.contains("3.")
+                })
             })
-        }).collect();
+            .collect();
         assert!(!numbered.is_empty(), "ordered list items missing");
     }
 
     #[test]
     fn test_blockquote() {
         let lines = render_markdown("> This is a quote", 80);
-        let has_border = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains('▎'))
-        });
+        let has_border = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('▎')));
         assert!(has_border, "blockquote border missing");
     }
 
     #[test]
     fn test_horizontal_rule() {
         let lines = render_markdown("---", 80);
-        let has_rule = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains('─'))
-        });
+        let has_rule = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains('─')));
         assert!(has_rule, "horizontal rule missing");
     }
 
@@ -629,9 +634,9 @@ mod tests {
     fn test_chinese_markdown() {
         let md = "这是**粗体**和*斜体*以及`代码`的测试。";
         let lines = render_markdown(md, 80);
-        let has_chinese = lines.iter().any(|l| {
-            l.spans.iter().any(|s| s.content.contains("这是"))
-        });
+        let has_chinese = lines
+            .iter()
+            .any(|l| l.spans.iter().any(|s| s.content.contains("这是")));
         assert!(has_chinese, "Chinese text missing");
     }
 }

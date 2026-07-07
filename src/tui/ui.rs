@@ -7,7 +7,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::widgets::{Block, Borders, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
 use super::app::{App, ChatMessage, ToolCallState};
@@ -47,6 +47,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 // ── Chat Area ────────────────────────────────────────────────────────────────────
 
 /// Renders the scrollable conversation history with a right-edge scrollbar.
+///
+/// When the scrollbar is visible, the paragraph is rendered into a
+/// 1-column-narrower area so ratatui's internal line-wrapping respects
+/// the narrower text width. The scrollbar is drawn in the freed column,
+/// completely outside the paragraph — no overlap possible.
 fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -56,13 +61,39 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     let visible_height = inner.height.max(1) as usize;
 
-    // Convert messages → styled lines
-    let all_lines: Vec<Line<'_>> = app
+    // Build all lines at full inner width to determine whether scrollbar is needed.
+    let full_lines: Vec<Line<'_>> = app
         .messages
         .iter()
         .flat_map(|msg| message_to_lines(msg, inner.width))
         .collect();
+    let has_scrollbar = full_lines.len() > visible_height;
 
+    // When scrollbar is visible, shrink the paragraph's rendering area by
+    // 1 column so wrapping happens at the narrower width. The scrollbar
+    // occupies the rightmost column of `area`, outside the paragraph.
+    let para_area = if has_scrollbar {
+        Rect {
+            width: area.width.saturating_sub(1).max(3), // min 3 for borders + 1 col text
+            ..area
+        }
+    } else {
+        area
+    };
+
+    let para_inner = block.inner(para_area);
+    let text_width = para_inner.width;
+    let visible_height = para_inner.height.max(1) as usize;
+
+    // Build lines at the actual text width, then manually wrap each
+    // line so the count accurately reflects visual rows. Ratatui's
+    // Paragraph wrapping would add more rows we can't count.
+    let raw_lines: Vec<Line<'_>> = app
+        .messages
+        .iter()
+        .flat_map(|msg| message_to_lines(msg, text_width))
+        .collect();
+    let all_lines = wrap_to_width(raw_lines, text_width);
     let total_lines = all_lines.len();
 
     // Compute scroll offset
@@ -71,15 +102,16 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(Text::from(all_lines))
         .block(block)
-        .scroll((scroll, 0))
-        .wrap(Wrap { trim: false });
+        .scroll((scroll, 0));
 
-    frame.render_widget(paragraph, area);
+    frame.render_widget(paragraph, para_area);
 
-    // ── Scrollbar ────────────────────────────────────────────────────
-    if max_scroll > 0 {
+    // ── Scrollbar — drawn in the rightmost column of `area`, outside ──
+    // ── the paragraph. No overlap with text is possible.             ──
+    if has_scrollbar {
+        let scrollbar_x = area.x + area.width.saturating_sub(1);
         let scrollbar_area = Rect {
-            x: area.right().saturating_sub(1),
+            x: scrollbar_x,
             y: inner.y,
             width: 1,
             height: inner.height,
@@ -98,15 +130,13 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
         for row in 0..inner.height {
             let y = scrollbar_area.y + row;
             if row >= thumb_top && row < thumb_top + thumb_height {
-                // Thumb (active position indicator)
                 frame.buffer_mut().set_string(
                     scrollbar_area.x,
                     y,
                     "█",
                     Style::default().fg(Color::DarkGray),
                 );
-            } else if row < thumb_top || row >= thumb_top + thumb_height {
-                // Track (inactive area)
+            } else {
                 frame.buffer_mut().set_string(
                     scrollbar_area.x,
                     y,
@@ -362,6 +392,81 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
         "…".to_string()
     } else {
         format!("{}…", &text[..byte_end])
+    }
+}
+
+/// Wraps each [`Line`] to `max_width` display columns, splitting wide
+/// lines so the returned `Vec` length accurately reflects visual rows.
+///
+/// Ratatui's `Paragraph` would wrap lines internally, but we can't count
+/// those extra rows — so we wrap manually here for correct scroll math.
+fn wrap_to_width(lines: Vec<Line<'_>>, max_width: u16) -> Vec<Line<'_>> {
+    let max_w = max_width.max(1) as usize;
+    let mut out = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        let total_w: usize = line
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+
+        if total_w <= max_w {
+            out.push(line);
+            continue;
+        }
+
+        // Line is too wide — flatten to plain text, split at display-width
+        // boundaries, and re-apply the first span's style (most lines in
+        // our TUI have uniform styling within a single line).
+        let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        let base_style = line.spans.first().map(|s| s.style).unwrap_or_default();
+
+        let mut remaining: &str = &full_text;
+        while !remaining.is_empty() {
+            let (chunk, rest) = split_at_display_width(remaining, max_w);
+            out.push(Line::from(Span::styled(chunk.to_string(), base_style)));
+            remaining = rest;
+        }
+    }
+
+    out
+}
+
+/// Splits `text` at the closest valid boundary to `max_width` display columns.
+///
+/// Returns `(before, after)` where `before` fits within `max_width` columns
+/// and `after` is the rest (possibly empty). Always splits at a UTF-8
+/// character boundary.
+fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
+    if text.is_empty() {
+        return ("", "");
+    }
+
+    let mut width = 0usize;
+    let mut byte_pos = 0usize;
+
+    for (idx, ch) in text.char_indices() {
+        let ch_w = UnicodeWidthStr::width(ch.encode_utf8(&mut [0u8; 4]));
+        if width + ch_w > max_width {
+            break;
+        }
+        width += ch_w;
+        byte_pos = idx + ch.len_utf8();
+    }
+
+    if byte_pos == 0 {
+        // Even one character doesn't fit — force at least one char
+        let first_char = text.chars().next().unwrap();
+        (
+            text.get(..first_char.len_utf8()).unwrap(),
+            text.get(first_char.len_utf8()..).unwrap_or(""),
+        )
+    } else {
+        (
+            text.get(..byte_pos).unwrap(),
+            text.get(byte_pos..).unwrap_or(""),
+        )
     }
 }
 
@@ -708,5 +813,93 @@ mod tests {
     fn test_cursor_column_no_prompt() {
         // The cursor_column method includes the "> " prefix
         // This is tested via the App struct
+    }
+
+    // ── wrap_to_width / split_at_display_width tests ────────────
+
+    #[test]
+    fn test_split_at_display_width_empty() {
+        assert_eq!(split_at_display_width("", 80), ("", ""));
+    }
+
+    #[test]
+    fn test_split_at_display_width_fits() {
+        let (before, after) = split_at_display_width("hello", 80);
+        assert_eq!(before, "hello");
+        assert_eq!(after, "");
+    }
+
+    #[test]
+    fn test_split_at_display_width_exact() {
+        // "abcde" is 5 chars, each 1 column
+        let (before, after) = split_at_display_width("abcde", 5);
+        assert_eq!(before, "abcde");
+        assert_eq!(after, "");
+    }
+
+    #[test]
+    fn test_split_at_display_width_overflow() {
+        // 10 chars at width 5 → first 5 then remaining 5
+        let (before, after) = split_at_display_width("abcdefghij", 5);
+        assert_eq!(before, "abcde");
+        assert_eq!(after, "fghij");
+    }
+
+    #[test]
+    fn test_split_at_display_width_cjk() {
+        // Chinese chars are 2 columns each
+        let (before, after) = split_at_display_width("你好世界", 4);
+        assert_eq!(before, "你好"); // 4 columns
+        assert_eq!(after, "世界"); // 4 columns
+    }
+
+    #[test]
+    fn test_split_at_display_width_narrow() {
+        // Force at least one char even if it doesn't fit
+        let (before, after) = split_at_display_width("hello", 1);
+        assert_eq!(before, "h");
+        assert_eq!(after, "ello");
+    }
+
+    #[test]
+    fn test_wrap_to_width_no_wrap_needed() {
+        let lines = vec![Line::from(Span::raw("short"))];
+        let wrapped = wrap_to_width(lines, 80);
+        assert_eq!(wrapped.len(), 1);
+    }
+
+    #[test]
+    fn test_wrap_to_width_wraps_long_line() {
+        // 20 chars at width 5 → 4 lines of 5 chars each
+        let lines = vec![Line::from(Span::raw("abcdefghijklmnopqrst"))];
+        let wrapped = wrap_to_width(lines, 5);
+        assert_eq!(wrapped.len(), 4);
+        assert_eq!(wrapped[0].spans[0].content, "abcde");
+        assert_eq!(wrapped[1].spans[0].content, "fghij");
+        assert_eq!(wrapped[2].spans[0].content, "klmno");
+        assert_eq!(wrapped[3].spans[0].content, "pqrst");
+    }
+
+    #[test]
+    fn test_wrap_to_width_cjk() {
+        // 6 Chinese chars = 12 columns. At width 4 → 3 lines of 2 chars each.
+        let lines = vec![Line::from(Span::raw("你好世界测试"))];
+        let wrapped = wrap_to_width(lines, 4);
+        assert_eq!(wrapped.len(), 3);
+        // Each Chinese char is 2 columns, so 2 chars = 4 columns per line
+        assert_eq!(wrapped[0].spans[0].content, "你好");
+        assert_eq!(wrapped[1].spans[0].content, "世界");
+        assert_eq!(wrapped[2].spans[0].content, "测试");
+    }
+
+    #[test]
+    fn test_wrap_to_width_mixed_lines() {
+        let lines = vec![
+            Line::from(Span::raw("short")),
+            Line::from(Span::raw("abcdefghij")), // 10 chars
+        ];
+        let wrapped = wrap_to_width(lines, 5);
+        // "short" fits, "abcdefghij" → 2 lines
+        assert_eq!(wrapped.len(), 3);
     }
 }

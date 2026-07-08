@@ -27,6 +27,7 @@ This is a **Rust agent framework** built from scratch (Rust 2024 edition, Tokio 
 | `src/core/agent.rs` | Agent loop — `run_loop()` (fire-and-forget) and `run_with_events()` (real-time streaming via channel) with `max_steps` guard |
 | `src/tui/` | ratatui-based chat interface — scrollable history, streaming tokens, styled tool calls, slash commands |
 | `src/memory/mod.rs` | Conversation memory — `Memory`, `SharedMemory`, `MemoryBuilder`, two-phase compaction with `MemoryError` |
+| `src/persistence/mod.rs` | Conversation persistence — `save_conversation()`, `load_conversation()`, `list_threads()`, `generate_thread_name()` — saves to `.loomis/threads/{name}.json` + `.md`, auto-save after each agent turn, `/resume` picker, `/save <name>`, `/new` |
 | `src/tools/` | Tool system — `Tool` trait, `ToolRegistry`, `ToolError`, `generate_schema` helper (schemars-based JSON Schema auto-generation), `CalculatorTool`, `EchoTool`, `ShellTool`, and file-editing tools (`ReadTool`, `WriteTool`, `EditTool`, `GlobTool`, `GrepTool`, `LsTool`) |
 | `src/lib.rs` | Library crate root — re-exports `core`, `memory`, `tools`, `tui` |
 | `src/main.rs` | Binary entry point — TUI by default, `--no-tui` for legacy line-based CLI |
@@ -172,7 +173,7 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 
 **Keybindings**: Enter (submit), Ctrl+C (cancel/exit), Esc (cancel), Ctrl+D (exit on empty), PgUp/PgDown (scroll), Up/Down (history), Left/Right/Home/End (cursor), Y/n (approve/deny shell commands). `!command` prefix runs a local shell command asynchronously, displays output inline, and shares it with the agent via SharedMemory. `!!` escapes the prefix (treated as literal text).
 
-**Slash commands** (handled locally): `/exit`, `/clear`, `/stats`, `/tools`, `/help`. **Bang prefix** (`!<cmd>`): executes a shell command in the workspace root, shows "Running…" immediately, then displays captured stdout/stderr. Output is pushed to `SharedMemory` as a User message so the agent sees it in subsequent turns. `!!` is reserved — use it to start a message with a literal `!`.
+**Slash commands** (handled locally): `/exit`, `/new`, `/save <name>`, `/resume [name]`, `/threads`, `/stats`, `/tools`, `/help`. `/resume` (no args) opens a picker overlay (↑↓ to navigate, Enter to select, Esc to dismiss) listing all saved conversation threads. `/resume <name>` bypasses the picker for direct restore. `/new` saves the current conversation (named after the first user message) before starting fresh. **Bang prefix** (`!<cmd>`): executes a shell command in the workspace root, shows "Running…" immediately, then displays captured stdout/stderr. Output is pushed to `SharedMemory` as a User message so the agent sees it in subsequent turns. `!!` is reserved — use it to start a message with a literal `!`.
 
 **UTF-8 safety**: `floor_char_boundary()` used in `truncate_args()` and `truncate_output()` to avoid panics on multi-byte character boundaries.
 
@@ -190,6 +191,7 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 - **`!command` shell execution**: User-typed `!` prefix flows through `TuiCommand::RunShell` → `agent_handler` → `tokio::task::spawn_blocking(execute_shell_command)`. An immediate `AgentEvent::ShellRunning` gives the user instant feedback (yellow "Running…" in the TUI). On completion, output is decoded via UTF-8-first-then-GetACP-MultiByteToWideChar (handles Chinese GBK/CP936 on Windows pipes), pushed to `SharedMemory` as a User message, and sent to the TUI via `AgentEvent::ShellOutput`.
 - **Watchdog with early-exit signal**: `Arc<AtomicBool>` lets the watchdog thread poll every 100ms and exit immediately when the command completes, rather than sleeping the full 30s timeout. `done.store(true, Relaxed)` is called after `wait_with_output()` returns; the watchdog checks the flag and returns early. Without this, `watchdog.join()` blocks for the entire timeout duration even for 15ms commands.
 - **Windows pipe encoding**: cmd built-ins (`dir`, `echo`, `type`) output in the system ANSI code page (GBK/CP936 on Chinese Windows) when stdout is a pipe — `chcp 65001` does not affect pipes. The `decode_stdout()` helper in both `event.rs` and `tool_shell.rs` tries `std::str::from_utf8` first (modern CLI tools like git/cargo/rustc output valid UTF-8), then falls back to `GetACP()` + `MultiByteToWideChar()`. No external crates needed — the FFI declarations are `unsafe extern "system"` linking against kernel32.
+- **Conversation persistence**: Auto-save after each agent turn saves to `.loomis/threads/{name}.json` + `.md` (human-readable Markdown). Thread names are auto-generated from the first user message via `generate_thread_name()` (lowercased ASCII slug). `.loomis/current` tracks the active thread. `/resume` opens a picker overlay that intercepts all keyboard input (only ↑↓/Enter/Esc processed). `/new` saves the current thread before clearing. Compaction summaries (System messages) are saved as-is — `/resume` restores the exact memory state.
 
 ### Roadmap (from README)
 
@@ -201,7 +203,8 @@ The project is in **Phase 1** (MVP). Completed and next:
 - [x] `tools/fs.rs` + file-editing tools — `WorkspaceFs` sandbox + `ReadTool` / `WriteTool` / `EditTool` / `GlobTool` / `GrepTool` / `LsTool`
 - [x] `tools/tool_shell.rs` — `ShellTool` for executing CLI commands with timeout; TUI confirmation via async oneshot handshake (`Y`/`n`)
 - [x] `core/agent.rs` — main loop with `run_loop()` (batch) and `run_with_events()` (streaming via `AgentEvent` channel), `max_steps` guard, tool-call dispatch via `ToolRegistry`
-- [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands, `!command` shell execution with async watchdog and Windows encoding fix, status bar. Default mode; `--no-tui` for legacy CLI.
+- [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands (`/exit`, `/new`, `/save`, `/resume`, `/threads`, `/stats`, `/tools`, `/help`), `!command` shell execution with async watchdog and Windows encoding fix, status bar. Default mode; `--no-tui` for legacy CLI.
 - [x] `tools/schema.rs` — `generate_schema<T: JsonSchema>()` helper for auto-generating tool JSON Schema from typed args structs (schemars integration)
+- [x] `persistence/mod.rs` — conversation save/load to `.loomis/threads/` (JSON + human-readable Markdown), auto-save after each agent turn, `/resume` with picker overlay (↑↓/Enter/Esc), named threads via `/save <name>`, auto-naming from first user message, `.loomis/current` active-thread tracking
 
 Phases 2 and 3 cover streaming UX via mpsc, structured output, RAG with vector DB, and observability with `tracing`.

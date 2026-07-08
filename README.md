@@ -30,7 +30,8 @@ Loomis 是一个纯 Rust（2024 edition）编写的 **AI 编码助手**。它在
 - **Agent 主循环** — `run_loop()` 批量模式 + `run_with_events()` 实时流式模式，通过 `mpsc` 通道推送事件，`max_steps` 防止无限循环
 - **可插拔工具系统** — `Tool` trait + `ToolRegistry`，内置计算器、Shell 命令执行（需用户确认）、文件读写/编辑、glob 文件匹配、grep 内容搜索、ls 目录列表等 9 个工具，统一由 `WorkspaceFs` 沙箱隔离
 - **对话记忆管理** — 可配置压缩阈值，两阶段压缩（`drain_for_compact` → `apply_compact`），`Arc<RwLock<Memory>>` 多任务共享，系统消息永不被压缩
-- **终端交互界面** — [ratatui](https://ratatui.rs/) + [crossterm](https://crates.io/crates/crossterm) 打造，支持实时流式 Token、工具调用状态展示、滚动历史、斜杠命令
+- **对话持久化** — 自动保存到 `.loomis/threads/`（JSON + Markdown），多线程命名管理，`/resume` 弹窗选择器恢复历史对话，`/save <name>` 手动命名快照
+- **终端交互界面** — [ratatui](https://ratatui.rs/) + [crossterm](https://crates.io/crates/crossterm) 打造，支持实时流式 Token、工具调用状态展示、滚动历史、斜杠命令、线程选择器弹窗
 
 ## 快速开始
 
@@ -92,6 +93,8 @@ loomis/
     │       └── error.rs        # DeepSeekError：Http / Api / Parse / StreamingNotSupported
     ├── memory/
     │   └── mod.rs              # Memory, SharedMemory, MemoryBuilder, 两阶段压缩
+    ├── persistence/
+    │   └── mod.rs              # 对话持久化：save/load/list/generate_thread_name
     ├── tools/
     │   ├── mod.rs              # 模块根，re-export Tool, ToolRegistry, 所有内置工具
     │   ├── tool.rs             # Tool trait 定义
@@ -122,8 +125,9 @@ loomis/
 | `core/client/` | `DeepSeekClient`, `DeepSeekStream`, `DeepSeekChunk` | DeepSeek API 的类型化请求/响应封装，SSE 流式解析与反序列化 |
 | `core/agent.rs` | `Agent`, `AgentEvent`, `AgentError` | Agent 主循环：两种运行模式、指数退避重试、工具调用分发、内存压缩触发 |
 | `memory/` | `Memory`, `SharedMemory`, `MemoryBuilder`, `CompactSignal` | 对话上下文存储：可配置阈值、两阶段压缩、字符数估算 |
+| `persistence/` | `save_conversation`, `load_conversation`, `list_threads`, `generate_thread_name` | 对话持久化：多线程保存/恢复，JSON + Markdown 双格式，首条消息自动命名，`/resume` 选择器 |
 | `tools/` | `Tool`, `ToolRegistry`, `WorkspaceFs`, 9 个工具结构体 | 工具抽象层：trait 定义、注册分发、沙箱文件系统、内置工具集（含 Shell 命令确认） |
-| `tui/` | `App`, `ChatMessage`, `ToolCallState`, `TuiCommand` | 终端 UI：滚动历史、流式 Token 合并、工具调用状态卡片、键盘输入与斜杠命令 |
+| `tui/` | `App`, `ChatMessage`, `ThreadPicker`, `ToolCallState`, `TuiCommand` | 终端 UI：滚动历史、流式 Token 合并、工具调用状态卡片、键盘输入与斜杠命令、线程选择器弹窗 |
 
 ### Agent 主循环 (`core/agent.rs`)
 
@@ -283,7 +287,7 @@ agent_rx ←── AgentEvent ─────────────── agen
 
 **键盘操作**：Enter（发送）、Ctrl+C（取消/退出）、Esc（取消）、Ctrl+D（输入为空时退出）、PgUp/PgDown（滚动）、↑/↓（历史）、←/→/Home/End（光标移动）、Y/n（批准/拒绝 Shell 命令）。`!<命令>` 前缀直接在 TUI 中执行 Shell 命令，输出实时显示并注入到 Agent 对话上下文；`!!` 作为转义符，允许以 `!` 开头的普通文本。
 
-**斜杠命令**（本地处理）：`/exit`, `/clear`, `/stats`, `/tools`, `/help`。**Bang 前缀**（`!<命令>`）：在沙箱根目录下异步执行 Shell 命令，先即时显示 "Running…" 后替换为捕获的 stdout/stderr。输出作为 User 消息注入 `SharedMemory`，Agent 在后续对话轮次中可以"看到"命令结果。
+**斜杠命令**（本地处理）：`/exit`, `/new`, `/save <name>`, `/resume [name]`, `/threads`, `/stats`, `/tools`, `/help`。`/resume`（无参数）打开居中弹窗选择器（↑↓ 导航，Enter 选择，Esc 取消），列出所有已保存的对话线程。`/resume <name>` 直接恢复指定线程。`/new` 在清空对话前自动保存当前线程（以首条用户消息命名）。**Bang 前缀**（`!<命令>`）：在沙箱根目录下异步执行 Shell 命令，先即时显示 "Running…" 后替换为捕获的 stdout/stderr。输出作为 User 消息注入 `SharedMemory`，Agent 在后续对话轮次中可以"看到"命令结果。
 
 **事件循环**：50ms 轮询间隔，每帧后 drain agent 事件，收集到 `Vec` 后在 `terminal.draw()` 释放不可变借用后应用，确保渲染流畅。
 
@@ -301,6 +305,7 @@ agent_rx ←── AgentEvent ─────────────── agen
 | Watchdog 早退信号 | `Arc<AtomicBool>` | Watchdog 线程每 100ms 检查标志位，命令完成即刻退出，不阻塞 join() |
 | Windows 管道编码 | `decode_stdout()`: UTF-8 → `GetACP()` → `MultiByteToWideChar()` | 解决 cmd 管道输出 GBK/CP936 中文乱码，无外部依赖 |
 | 指数退避重试 | `stream_with_retry` | 瞬时网络错误的健壮性保障 |
+| 对话持久化 | `save_conversation` / `load_conversation` / `generate_thread_name` | 每次 Agent 回合后自动保存到 `.loomis/threads/`（JSON + Markdown），首条用户消息自动命名线程，`/resume` 弹窗选择器恢复 |
 
 ## 开发路线
 
@@ -310,7 +315,8 @@ agent_rx ←── AgentEvent ─────────────── agen
 - [x] Agent 主循环：批量 + 流式两种模式，`max_steps` 保护，工具自动分发
 - [x] 工具系统：`Tool` trait + `ToolRegistry`，9 个内置工具，`WorkspaceFs` 沙箱，Shell 命令用户确认
 - [x] 记忆模块：可配置阈值，两阶段压缩
-- [x] 终端 UI：ratatui 聊天界面，流式 Token，工具调用卡片，斜杠命令
+- [x] 终端 UI：ratatui 聊天界面，流式 Token，工具调用卡片，斜杠命令（`/exit`, `/new`, `/save`, `/resume`, `/threads`, `/stats`, `/tools`, `/help`）
+- [x] 对话持久化：`.loomis/threads/` 多线程保存/恢复，JSON + Markdown 双格式，首条消息自动命名，`/resume` 选择器弹窗
 
 ### 第二阶段 — 进阶
 

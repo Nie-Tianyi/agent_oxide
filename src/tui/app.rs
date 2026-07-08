@@ -9,7 +9,9 @@ use std::time::SystemTime;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::core::agent::AgentEvent;
+use crate::core::client::Role;
 use crate::memory::SharedMemory;
+use crate::persistence;
 
 // ── ChatMessage ──────────────────────────────────────────────────────────────────
 
@@ -110,6 +112,20 @@ pub enum TuiCommand {
     Exit,
 }
 
+// ── ThreadPicker ──────────────────────────────────────────────────────────────────
+
+/// State for the thread-selection overlay.
+///
+/// When `Some`, all keyboard input is intercepted by the picker until the
+/// user selects a thread or presses `Esc`.
+#[derive(Debug, Clone)]
+pub struct ThreadPicker {
+    /// Available threads, sorted newest-first.
+    pub threads: Vec<persistence::ThreadInfo>,
+    /// Currently highlighted index.
+    pub selected: usize,
+}
+
 // ── App ──────────────────────────────────────────────────────────────────────────
 
 /// Mutable state owned by the TUI event loop.
@@ -152,6 +168,14 @@ pub struct App {
     /// Saved copy of the in-progress input before history navigation started.
     draft_input: String,
 
+    // ── Thread picker overlay ──
+    pub thread_picker: Option<ThreadPicker>,
+
+    // ── Conversation auto-save ──
+    /// Thread name for auto-save, set from the first user message.
+    /// `None` until the first message after app start or `/new`.
+    pub conversation_title: Option<String>,
+
     // ── Exit signal ──
     pub should_quit: bool,
 }
@@ -183,6 +207,8 @@ impl App {
             history: Vec::new(),
             history_index: None,
             draft_input: String::new(),
+            thread_picker: None,
+            conversation_title: None,
             should_quit: false,
         }
     }
@@ -321,6 +347,11 @@ impl App {
     /// Slash commands (`/stats`, `/tools`) are handled inline because they
     /// only need shared state already available on the TUI side.
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        // ── Thread picker intercepts most keys ───────────────────
+        if self.thread_picker.is_some() {
+            return self.handle_thread_picker_key(key);
+        }
+
         match key.code {
             // ── Submit / Newline ───────────────────────────────
             KeyCode::Enter => {
@@ -370,7 +401,14 @@ impl App {
                     return cmd;
                 }
 
-                // Normal user message
+                // Normal user message — generate auto-save thread name from
+                // the first message of this conversation.
+                if self.conversation_title.is_none() {
+                    let title = persistence::generate_thread_name(&input);
+                    let _ = persistence::write_current_thread(&title, &self.workspace_root);
+                    self.conversation_title = Some(title);
+                }
+
                 self.messages.push(ChatMessage::User {
                     content: input.clone(),
                     timestamp: ChatMessage::now_timestamp(),
@@ -597,19 +635,72 @@ impl App {
     /// Handles slash commands that don't need the agent. Returns
     /// `Some(TuiCommand)` when the command needs agent-thread action.
     fn handle_slash_command(&mut self, input: &str) -> Option<Option<TuiCommand>> {
+        // ── Prefix commands (have arguments) ──
+        if let Some(name) = input.strip_prefix("/save ") {
+            let name = name.trim();
+            if name.is_empty() || !is_valid_thread_name(name) {
+                self.messages.push(ChatMessage::System {
+                    content: "Usage: /save <name>  —  name must use only letters, digits, hyphens, and underscores.".into(),
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+                return Some(None);
+            }
+            let mem = self.memory.read().unwrap();
+            match persistence::save_conversation(name, &self.workspace_root, &mem) {
+                Ok(()) => {
+                    let _ = persistence::write_current_thread(name, &self.workspace_root);
+                    self.messages.push(ChatMessage::System {
+                        content: format!("Saved conversation as \"{name}\"."),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                }
+                Err(e) => {
+                    self.messages.push(ChatMessage::Error {
+                        content: format!("Failed to save: {e}"),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                }
+            }
+            return Some(None);
+        }
+
+        if let Some(name) = input.strip_prefix("/resume ") {
+            let name = name.trim();
+            if name.is_empty() {
+                self.open_thread_picker();
+                return Some(None);
+            }
+            return Some(self.do_resume(name));
+        }
+
+        // ── Exact-match commands ──
         match input {
             "/exit" => {
                 self.should_quit = true;
                 Some(Some(TuiCommand::Exit))
             }
 
-            "/clear" => {
+            "/new" => {
+                // Save current conversation before starting fresh.
+                if let Some(ref title) = self.conversation_title {
+                    let mem = self.memory.read().unwrap();
+                    let _ = persistence::save_conversation(title, &self.workspace_root, &mem);
+                }
+                self.conversation_title = None;
+                // Write fallback for the gap between /new and first message.
+                let _ = persistence::write_current_thread("autosave", &self.workspace_root);
+
                 self.messages.clear();
                 self.messages.push(ChatMessage::System {
-                    content: "Conversation cleared (system prompt preserved).".into(),
+                    content: "New conversation started (system prompt preserved).".into(),
                     timestamp: ChatMessage::now_timestamp(),
                 });
                 Some(Some(TuiCommand::ClearConversation))
+            }
+
+            "/resume" | "/threads" => {
+                self.open_thread_picker();
+                Some(None)
             }
 
             "/stats" => {
@@ -625,7 +716,7 @@ impl App {
                     content,
                     timestamp: ChatMessage::now_timestamp(),
                 });
-                Some(None) // handled locally
+                Some(None)
             }
 
             "/tools" => {
@@ -643,17 +734,20 @@ impl App {
                     content,
                     timestamp: ChatMessage::now_timestamp(),
                 });
-                Some(None) // handled locally
+                Some(None)
             }
 
             "/help" => {
                 let content = [
                     "Commands:",
-                    "  /exit   — quit",
-                    "  /clear  — reset conversation",
-                    "  /stats  — memory statistics",
-                    "  /tools  — list registered tools",
-                    "  /help   — show this message",
+                    "  /exit          — quit",
+                    "  /new           — start a new conversation",
+                    "  /save <name>   — save conversation as a named thread",
+                    "  /resume [name] — restore a thread (no name = picker)",
+                    "  /threads       — open thread picker",
+                    "  /stats         — memory statistics",
+                    "  /tools         — list registered tools",
+                    "  /help          — show this message",
                     "",
                     "Shell prefix:",
                     "  !<cmd>  — run a shell command and share output with the agent",
@@ -679,6 +773,154 @@ impl App {
 
             _ => None, // not a slash command — normal message
         }
+    }
+
+    // ── Thread Picker ─────────────────────────────────────────────────────────
+
+    /// Handles keyboard input while the thread picker overlay is active.
+    ///
+    /// Only `Esc`, `Enter`, `Up`, and `Down` are processed; all other keys
+    /// are swallowed to prevent input from leaking into the chat.
+    fn handle_thread_picker_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        let Some(picker) = &mut self.thread_picker else {
+            return None;
+        };
+
+        match key.code {
+            KeyCode::Esc => {
+                self.thread_picker = None;
+                None
+            }
+            KeyCode::Enter => {
+                let name = picker.threads[picker.selected].name.clone();
+                self.thread_picker = None;
+                self.do_resume(&name)
+            }
+            KeyCode::Up => {
+                if picker.selected > 0 {
+                    picker.selected -= 1;
+                }
+                None
+            }
+            KeyCode::Down => {
+                if picker.selected + 1 < picker.threads.len() {
+                    picker.selected += 1;
+                }
+                None
+            }
+            _ => None, // swallow all other keys
+        }
+    }
+
+    /// Loads a named thread and replaces the current conversation.
+    ///
+    /// Shared by the picker (`Enter`) and the `/resume <name>` slash command.
+    fn do_resume(&mut self, name: &str) -> Option<TuiCommand> {
+        match persistence::load_conversation(name, &self.workspace_root) {
+            Ok(loaded) => {
+                *self.memory.write().unwrap() = loaded;
+                let _ = persistence::write_current_thread(name, &self.workspace_root);
+                self.conversation_title = Some(name.to_string());
+                self.rebuild_messages_from_memory();
+                self.messages.insert(
+                    0,
+                    ChatMessage::System {
+                        content: format!("Resumed conversation \"{name}\"."),
+                        timestamp: ChatMessage::now_timestamp(),
+                    },
+                );
+            }
+            Err(e) => {
+                self.messages.push(ChatMessage::Error {
+                    content: format!("Failed to resume \"{name}\": {e}"),
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+            }
+        }
+        None
+    }
+
+    /// Opens the thread picker overlay with all saved conversations.
+    fn open_thread_picker(&mut self) {
+        match persistence::list_threads(&self.workspace_root) {
+            Ok(threads) if !threads.is_empty() => {
+                self.thread_picker = Some(ThreadPicker {
+                    threads,
+                    selected: 0,
+                });
+            }
+            Ok(_) => {
+                self.messages.push(ChatMessage::System {
+                    content: "No saved conversations. Use /save <name> to save one.".into(),
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+            }
+            Err(e) => {
+                self.messages.push(ChatMessage::Error {
+                    content: format!("Error listing threads: {e}"),
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+            }
+        }
+    }
+
+    /// Rebuilds `self.messages` (TUI display) from the current state of
+    /// `self.memory`. Used after `/resume` to restore display history.
+    fn rebuild_messages_from_memory(&mut self) {
+        let mem = self.memory.read().unwrap();
+        let msgs = mem.messages().to_vec(); // clone under lock, then drop
+        drop(mem);
+
+        let ts = ChatMessage::now_timestamp();
+        self.messages.clear();
+
+        for msg in &msgs {
+            match msg.role {
+                Role::System => {
+                    self.messages.push(ChatMessage::System {
+                        content: msg.content.clone(),
+                        timestamp: ts.clone(),
+                    });
+                }
+                Role::User => {
+                    self.messages.push(ChatMessage::User {
+                        content: msg.content.clone(),
+                        timestamp: ts.clone(),
+                    });
+                }
+                Role::Assistant => {
+                    // Append compact tool-call summary if present
+                    let content = if let Some(ref tool_calls) = msg.tool_calls {
+                        let tc_list: Vec<String> = tool_calls
+                            .iter()
+                            .map(|tc| format!("[Tool: {} (id: {})]", tc.function.name, tc.id))
+                            .collect();
+                        if msg.content.is_empty() {
+                            tc_list.join("\n")
+                        } else {
+                            format!("{}\n\n{}", msg.content, tc_list.join("\n"))
+                        }
+                    } else {
+                        msg.content.clone()
+                    };
+                    self.messages.push(ChatMessage::Assistant {
+                        content,
+                        timestamp: ts.clone(),
+                    });
+                }
+                Role::Tool => {
+                    let preview = truncate_for_display(&msg.content, 500);
+                    let id = msg.tool_call_id.as_deref().unwrap_or("?");
+                    self.messages.push(ChatMessage::System {
+                        content: format!("[Tool result: {id}]\n{preview}"),
+                        timestamp: ts.clone(),
+                    });
+                }
+            }
+        }
+
+        self.auto_scroll = true;
+        self.scroll_offset = 0;
     }
 }
 
@@ -759,6 +1001,27 @@ impl App {
         }
         None
     }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────────
+
+/// Truncates text at a valid UTF-8 boundary for compact display, appending
+/// `"..."` when truncation occurs.
+fn truncate_for_display(text: &str, max_len: usize) -> String {
+    if text.len() <= max_len {
+        return text.to_string();
+    }
+    let boundary = text.floor_char_boundary(max_len);
+    format!("{}...", &text[..boundary])
+}
+
+/// Returns `true` if `name` is a valid thread name (alphanumeric,
+/// hyphens, underscores, no whitespace or special chars).
+fn is_valid_thread_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────────
@@ -921,14 +1184,14 @@ mod tests {
     }
 
     #[test]
-    fn test_slash_clear_returns_clear_command() {
+    fn test_slash_new_returns_clear_command() {
         let mut app = make_app();
         app.messages.push(ChatMessage::User {
             content: "old".into(),
             timestamp: ts(),
         });
-        app.input = "/clear".into();
-        app.input_cursor = 6;
+        app.input = "/new".into();
+        app.input_cursor = 4;
 
         let result = submit_via_enter(&mut app);
         assert!(matches!(result, Some(TuiCommand::ClearConversation)));
@@ -936,7 +1199,7 @@ mod tests {
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
             ChatMessage::System { content, .. } => {
-                assert!(content.contains("cleared"));
+                assert!(content.contains("New conversation"));
             }
             other => panic!("expected System, got {other:?}"),
         }

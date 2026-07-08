@@ -7,10 +7,10 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
-use super::app::{App, ChatMessage, ShellOutputState, ToolCallState};
+use super::app::{App, ChatMessage, ShellOutputState, ThreadPicker, ToolCallState};
 use super::markdown::render_markdown;
 
 // ── Layout ───────────────────────────────────────────────────────────────────────
@@ -35,6 +35,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_chat(frame, layout[0], app);
     draw_input(frame, layout[1], app);
     draw_status(frame, layout[2], app);
+
+    // ── Thread Picker Overlay ──────────────────────────────────
+    if let Some(ref picker) = app.thread_picker {
+        draw_thread_picker(frame, area, picker);
+    }
 
     // Place the hardware cursor inside the input area.
     // Account for multi-line input (vertical offset) and CJK width.
@@ -719,6 +724,98 @@ fn draw_status(frame: &mut Frame, area: Rect, app: &App) {
 
     let paragraph = Paragraph::new(line);
     frame.render_widget(paragraph, area);
+}
+
+// ── Thread Picker Overlay ─────────────────────────────────────────────────────────
+
+/// Draws a centered popup overlay for selecting a saved conversation thread.
+///
+/// The overlay covers ~70% width and is vertically centered. The selected
+/// thread is highlighted in cyan; others are dimmed.
+fn draw_thread_picker(frame: &mut Frame, area: Rect, picker: &ThreadPicker) {
+    let threads = &picker.threads;
+    let selected = picker.selected;
+
+    let popup_width = (area.width as f32 * 0.7) as u16;
+    let popup_height = (threads.len() + 4).min(14) as u16;
+
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+
+    let popup_rect = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Resume Conversation ")
+        .border_style(Style::default().fg(Color::Cyan))
+        .style(Style::default().bg(Color::Rgb(20, 25, 35)));
+
+    let inner = block.inner(popup_rect);
+
+    // Build lines for each thread
+    let mut lines: Vec<Line<'_>> = Vec::new();
+
+    for (i, t) in threads.iter().enumerate() {
+        let is_selected = i == selected;
+
+        let marker = if is_selected { " ▶ " } else { "   " };
+        let info = format!(
+            "{name:20}  {count:4} msgs  {chars:6} chars  {time}",
+            name = t.name,
+            count = t.message_count,
+            chars = format_chars(t.total_chars),
+            time = t.saved_at,
+        );
+
+        let style = if is_selected {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        lines.push(Line::from(vec![
+            Span::styled(marker, style),
+            Span::styled(info, style),
+        ]));
+    }
+
+    // Add a blank spacer line before the footer
+    while lines.len() < inner.height.saturating_sub(1) as usize {
+        lines.push(Line::from(""));
+    }
+
+    // Footer
+    let footer = Line::from(Span::styled(
+        " ↑↓ navigate   Enter select   Esc cancel ",
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    ));
+    lines.push(footer);
+
+    let paragraph = Paragraph::new(Text::from(lines)).block(block);
+    frame.render_widget(paragraph, popup_rect);
+}
+
+/// Formats a character count with a human-readable suffix (e.g. "2.5k").
+fn format_chars(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 /// Builds the left, accent, and right portions of the status bar.

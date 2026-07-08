@@ -29,6 +29,7 @@ use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 use crate::core::agent::{Agent, AgentEvent};
 use crate::core::client::{Message, Role};
 use crate::memory::{Memory, SharedMemory};
+use crate::persistence;
 
 use super::app::{App, TuiCommand};
 
@@ -226,9 +227,20 @@ async fn agent_handler(
                 // for the next run.
                 let tx = agent_tx.clone();
                 let agent = Arc::clone(&agent);
+                let ws = workspace_root.clone();
+                let mem_for_save = memory.clone();
 
                 let handle = tokio::spawn(async move {
-                    match agent.run_with_events(tx.clone()).await {
+                    let result = agent.run_with_events(tx.clone()).await;
+
+                    // Auto-save conversation after each agent turn.
+                    {
+                        let mem = mem_for_save.read().unwrap();
+                        let name = persistence::default_thread_name(&ws);
+                        let _ = persistence::save_conversation(&name, &ws, &mem);
+                    }
+
+                    match result {
                         Ok(_content) => {
                             // Agent sends Done internally on success.
                         }
@@ -267,6 +279,14 @@ async fn agent_handler(
                 *mem = Memory::new();
                 for msg in system_msgs {
                     mem.push(msg);
+                }
+                drop(mem); // release write lock before read-lock for save
+
+                // Persist the cleared state.
+                {
+                    let mem = memory.read().unwrap();
+                    let name = persistence::default_thread_name(&workspace_root);
+                    let _ = persistence::save_conversation(&name, &workspace_root, &mem);
                 }
             }
 
@@ -325,6 +345,13 @@ async fn agent_handler(
             }
 
             TuiCommand::Exit => {
+                // Save conversation before exiting.
+                {
+                    let mem = memory.read().unwrap();
+                    let name = persistence::default_thread_name(&workspace_root);
+                    let _ = persistence::save_conversation(&name, &workspace_root, &mem);
+                }
+
                 if let Some(h) = current_run.take() {
                     h.abort();
                 }

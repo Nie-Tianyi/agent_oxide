@@ -94,8 +94,9 @@ agent_oxide/
     │   └── mod.rs              # Memory, SharedMemory, MemoryBuilder, 两阶段压缩
     ├── tools/
     │   ├── mod.rs              # 模块根，re-export Tool, ToolRegistry, 所有内置工具
-    │   ├── tool.rs             # Tool trait 定义 + extract_string_arg 辅助函数
+    │   ├── tool.rs             # Tool trait 定义
     │   ├── registry.rs         # ToolRegistry：HashMap 存储，register/execute/to_tool_defs
+    │   ├── schema.rs           # generate_schema<T>()：schemars 自动生成 JSON Schema
     │   ├── error.rs            # ToolError（Execution/InvalidArgs）+ FsError（文件系统错误）
     │   ├── fs.rs               # WorkspaceFs：路径规范化 + 沙箱边界检查
     │   ├── calculator.rs       # CalculatorTool：词法分析器 → 递归下降解析器 → 求值
@@ -231,7 +232,7 @@ tools/
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> Value;                // 手动编写的 JSON Schema
+    fn parameters(&self) -> Value;                // schemars 自动生成，构造时缓存
     fn execute(&self, args: &str) -> Result<String, ToolError>;
     fn to_def(&self) -> ToolDef { .. }            // 提供默认实现
 }
@@ -240,9 +241,12 @@ pub trait Tool: Send + Sync {
 **集成链路**：
 
 ```text
+Args struct (JsonSchema + Deserialize) → generate_schema() → 缓存在工具中 → parameters() clone 返回
 Tool impl → to_def() → ToolDef → DeepSeekRequest.tools
-Tool impl ← ToolRegistry::execute(name, args) ← ToolCall.function.{name, arguments}
+Tool impl ← ToolRegistry::execute(name, args) ← serde_json::from_str::<Args>()  ← ToolCall.function.{name, arguments}
 ```
+
+**工具参数模式**：每个工具定义带有 `#[derive(JsonSchema, Deserialize)]` 的参数结构体，通过 `generate_schema::<Args>()` 在构造时生成一次 JSON Schema 并缓存，`execute()` 中使用 `serde_json::from_str::<Args>()` 进行类型化反序列化。
 
 **WorkspaceFs 沙箱**：
 
@@ -305,7 +309,7 @@ agent_rx ←── AgentEvent ─────────────── agen
 
 ### 第二阶段 — 进阶
 
-- [ ] 宏驱动 `#[derive(JsonSchema)]` 自动生成工具 Schema
+- [x] `schemars` 驱动的 `#[derive(JsonSchema)]` 自动生成工具 JSON Schema
 - [ ] Jinja 风格提示词模板引擎
 - [ ] 结构化输出（`response_format` → 类型反序列化）
 - [ ] 流式交互体验打磨

@@ -27,7 +27,7 @@ This is a **Rust agent framework** built from scratch (Rust 2024 edition, Tokio 
 | `src/core/agent.rs` | Agent loop — `run_loop()` (fire-and-forget) and `run_with_events()` (real-time streaming via channel) with `max_steps` guard |
 | `src/tui/` | ratatui-based chat interface — scrollable history, streaming tokens, styled tool calls, slash commands |
 | `src/memory/mod.rs` | Conversation memory — `Memory`, `SharedMemory`, `MemoryBuilder`, two-phase compaction with `MemoryError` |
-| `src/tools/` | Tool system — `Tool` trait, `ToolRegistry`, `ToolError`, `CalculatorTool`, `EchoTool`, `ShellTool`, and file-editing tools (`ReadTool`, `WriteTool`, `EditTool`, `GlobTool`, `GrepTool`, `LsTool`) |
+| `src/tools/` | Tool system — `Tool` trait, `ToolRegistry`, `ToolError`, `generate_schema` helper (schemars-based JSON Schema auto-generation), `CalculatorTool`, `EchoTool`, `ShellTool`, and file-editing tools (`ReadTool`, `WriteTool`, `EditTool`, `GlobTool`, `GrepTool`, `LsTool`) |
 | `src/lib.rs` | Library crate root — re-exports `core`, `memory`, `tools`, `tui` |
 | `src/main.rs` | Binary entry point — TUI by default, `--no-tui` for legacy line-based CLI |
 
@@ -98,10 +98,11 @@ Split by concern, mirroring `core/client/`:
 
 | File | Purpose |
 | ---- | ------- |
-| `mod.rs` | Module root — re-exports all public types (`Tool`, `ToolError`, `ToolRegistry`, `FsError`, `WorkspaceFs`, all tool structs, `extract_string_arg`, `tool_to_def`) |
+| `mod.rs` | Module root — re-exports all public types (`Tool`, `ToolError`, `ToolRegistry`, `FsError`, `WorkspaceFs`, all tool structs, `generate_schema`, `tool_to_def`) |
 | `error.rs` | `ToolError` — `Execution(String)` / `InvalidArgs(String)`. `FsError` — `PathEscapesWorkspace` / `NotFound` / `NotAFile` / `NotADirectory` / `Io` / `Glob` / `Regex` |
-| `tool.rs` | `Tool` trait — `name()`, `description()`, `parameters()`, `execute()`, plus provided `to_def()` method. Free helper `extract_string_arg(args, field)` |
+| `tool.rs` | `Tool` trait — `name()`, `description()`, `parameters()`, `execute()`, plus provided `to_def()` method |
 | `registry.rs` | `ToolRegistry` — `HashMap<String, Arc<dyn Tool>>`, methods: `register`, `get`, `has`, `len`, `is_empty`, `iter`, `to_tool_defs()`, `execute()`. `tool_to_def(&dyn Tool) -> ToolDef` free function |
+| `schema.rs` | `generate_schema<T: JsonSchema>() -> Value` — generates OpenAI-compatible JSON Schema from typed structs via `schemars`. Strips `$schema`, injects `additionalProperties: false`. Each tool caches its schema at construction time |
 | `fs.rs` | `WorkspaceFs` — sandboxed filesystem backend. All paths canonicalized and checked against `workspace_root`. Methods: `read`, `write`, `edit_lines`, `glob`, `grep`, `ls`. Supporting types: `DirEntry`, `EntryType`, `GrepMatch` |
 | `calculator.rs` | `CalculatorTool` + recursive-descent expression evaluator (`Lexer` → `Parser` separation). Supports `+`, `-`, `*`, `/`, `()`, unary `+`/`-` |
 | `echo.rs` | `EchoTool` — minimal reference implementation for custom tools |
@@ -119,7 +120,7 @@ Split by concern, mirroring `core/client/`:
 pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
-    fn parameters(&self) -> Value;                        // manual JSON Schema
+    fn parameters(&self) -> Value;                        // auto-generated via schemars, cached
     fn execute(&self, args: &str) -> Result<String, ToolError>;
     fn to_def(&self) -> ToolDef { .. }                    // provided default
 }
@@ -128,6 +129,7 @@ pub trait Tool: Send + Sync {
 **Integration flow**:
 
 ```text
+Args struct (JsonSchema + Deserialize) → generate_schema() → cached schema → parameters() clone
 Tool impl → to_def() → ToolDef → DeepSeekRequest.tools
 Tool impl ← ToolRegistry::execute(name, args) ← ToolCall.function.{name, arguments}
 ```
@@ -195,5 +197,6 @@ The project is in **Phase 1** (MVP). Completed and next:
 - [x] `tools/tool_shell.rs` — `ShellTool` for executing CLI commands with timeout; TUI confirmation via async oneshot handshake (`Y`/`n`)
 - [x] `core/agent.rs` — main loop with `run_loop()` (batch) and `run_with_events()` (streaming via `AgentEvent` channel), `max_steps` guard, tool-call dispatch via `ToolRegistry`
 - [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands, status bar. Default mode; `--no-tui` for legacy CLI.
+- [x] `tools/schema.rs` — `generate_schema<T: JsonSchema>()` helper for auto-generating tool JSON Schema from typed args structs (schemars integration)
 
-Phases 2 and 3 cover macros/schemars for auto-schema, streaming UX via mpsc, structured output, RAG with vector DB, and observability with `tracing`.
+Phases 2 and 3 cover streaming UX via mpsc, structured output, RAG with vector DB, and observability with `tracing`.

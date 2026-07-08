@@ -236,6 +236,8 @@ fn print_welcome(model: &str, cwd: &std::path::Path, agent: &Agent) {
     println!("║  /clear  — reset conversation               ║");
     println!("║  /stats  — memory statistics                ║");
     println!("║  /tools  — list registered tools            ║");
+    println!("║  /help   — help + keybindings               ║");
+    println!("║  !cmd    — run shell, output → agent        ║");
     println!("╚══════════════════════════════════════════════╝");
 }
 

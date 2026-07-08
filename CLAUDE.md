@@ -57,7 +57,7 @@ HTTP chunk → buffer → find_event_end (\n\n) → trim_trailing_newlines → e
 | Type | Purpose |
 | ---- | ------- |
 | `Agent` | `{ client: DeepSeekClient, memory: SharedMemory, registry: Arc<ToolRegistry>, model, max_steps, streaming, pending_confirmations }` |
-| `AgentEvent` | `Token(String)` / `ReasoningToken(String)` / `ToolCallStart { id, name }` / `ToolCallArgsDelta { id, delta }` / `ToolResult { id, name, output }` / `ConfirmShell { tool_call_id, command }` / `Done` — sent through `mpsc::UnboundedSender` during streaming |
+| `AgentEvent` | `Token(String)` / `ReasoningToken(String)` / `ToolCallStart { id, name }` / `ToolCallArgsDelta { id, delta }` / `ToolResult { id, name, output }` / `ConfirmShell { tool_call_id, command }` / `ShellRunning { command }` / `ShellOutput { command, output }` / `Done` — sent through `mpsc::UnboundedSender` during streaming |
 | `AgentError` | `DeepSeek(String)` / `Tool { name, error }` |
 | `PendingConfirmations` | `Arc<Mutex<HashMap<String, oneshot::Sender<bool>>>>` — shared state for user shell-command approval handshake |
 
@@ -143,7 +143,7 @@ ratatui + crossterm-based chat interface modeled after Claude Code. Split by con
 | File | Purpose |
 | ---- | ------- |
 | `mod.rs` | Module root — `pub mod app; mod event; mod ui;`, re-exports `App`, `ChatMessage`, `ToolCallState`, `TuiCommand`, `run` |
-| `app.rs` | Core state machine — `App` struct, `ChatMessage` enum (6 variants), `apply_event()` streaming state machine, `handle_key()` keyboard processing with slash commands and Unicode-safe editing, 24 unit tests |
+| `app.rs` | Core state machine — `App` struct, `ChatMessage` enum (8 variants), `ShellOutputState`, `apply_event()` streaming state machine, `handle_key()` keyboard processing with slash commands, `!command` prefix, and Unicode-safe editing, 24 unit tests |
 | `ui.rs` | ratatui rendering — three-panel `Layout` (chat/input/status), styled `Line`/`Span` per message variant, scrollable `Paragraph`, hardware cursor, line-count estimation, 5 unit tests |
 | `event.rs` | Event loop + agent bridge — `run()` entry point (terminal init/restore, panic hook), `run_event_loop()` (50ms poll, agent event drain, render), `agent_handler()` async background task (spawn/cancel/clear lifecycle) |
 
@@ -156,7 +156,7 @@ cmd_tx ───────── TuiCommand ──────→ cmd_rx
 agent_rx ←────── AgentEvent ─────── agent_tx
 ```
 
-**`ChatMessage` variants**: `User`, `Assistant`, `Reasoning`, `ToolCall { id, name, args, state }`, `System`, `ShellConfirm { tool_call_id, command, responded }`, `Error` — each rendered with distinct styling (see `message_to_lines()` in ui.rs).
+**`ChatMessage` variants**: `User`, `Assistant`, `Reasoning`, `ToolCall { id, name, args, state }`, `System`, `ShellConfirm { tool_call_id, command, responded }`, `ShellOutput { command, state: ShellOutputState }`, `Error` — each rendered with distinct styling (see `message_to_lines()` in ui.rs). `ShellOutputState` is `Running` (showing a "Running…" indicator while a `!command` executes) or `Complete(output)`.
 
 **`apply_event` streaming state machine**:
 
@@ -166,11 +166,13 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 - `ToolCallArgsDelta { id, delta }` → find by id, append args
 - `ToolResult { id, name, output }` → find by id, set `Complete(output)`
 - `ConfirmShell { tool_call_id, command }` → push new `ShellConfirm { responded: false }`
+- `ShellRunning { command }` → push `ShellOutput { state: Running }` (immediate feedback)
+- `ShellOutput { command, output }` → find Running entry by command, set `state: Complete(output)`
 - `Done` → set `streaming = false`
 
-**Keybindings**: Enter (submit), Ctrl+C (cancel/exit), Esc (cancel), Ctrl+D (exit on empty), PgUp/PgDown (scroll), Up/Down (history), Left/Right/Home/End (cursor), Y/n (approve/deny shell commands).
+**Keybindings**: Enter (submit), Ctrl+C (cancel/exit), Esc (cancel), Ctrl+D (exit on empty), PgUp/PgDown (scroll), Up/Down (history), Left/Right/Home/End (cursor), Y/n (approve/deny shell commands). `!command` prefix runs a local shell command asynchronously, displays output inline, and shares it with the agent via SharedMemory. `!!` escapes the prefix (treated as literal text).
 
-**Slash commands** (handled locally): `/exit`, `/clear`, `/stats`, `/tools`, `/help`.
+**Slash commands** (handled locally): `/exit`, `/clear`, `/stats`, `/tools`, `/help`. **Bang prefix** (`!<cmd>`): executes a shell command in the workspace root, shows "Running…" immediately, then displays captured stdout/stderr. Output is pushed to `SharedMemory` as a User message so the agent sees it in subsequent turns. `!!` is reserved — use it to start a message with a literal `!`.
 
 **UTF-8 safety**: `floor_char_boundary()` used in `truncate_args()` and `truncate_output()` to avoid panics on multi-byte character boundaries.
 
@@ -185,6 +187,9 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 - **Async bridge (TUI)**: TUI event loop runs synchronously on the main thread; agent runs in a `tokio::spawn` background task. `mpsc::unbounded_channel` bridges them. `try_recv` drains agent events after each render frame; a 50ms poll timeout allows the runtime to make progress. Agent events are collected into a `Vec` and applied after `terminal.draw()` releases its immutable borrow.
 - **Cancellation**: `agent_handler` tracks the current agent's `tokio::task::JoinHandle`. On `CancelGeneration`, it aborts the handle and sends a synthetic `[Cancelled]` token + `Done`. On `Exit`, it aborts and breaks the handler loop.
 - **Shell confirmation handshake**: When the agent detects a `"shell"` tool call, it pauses the async loop and awaits user approval via a oneshot channel. The agent inserts a `Sender<bool>` into the shared `PendingConfirmations` map (keyed by `tool_call_id`), emits `AgentEvent::ConfirmShell` to the TUI, then awaits the receiver. The TUI renders a yellow prompt; on Y/n, it sends `TuiCommand::ShellConfirmation` back. The `agent_handler` looks up the sender and completes it, unblocking the agent. Without confirmation (CLI mode), shell commands execute unconditionally.
+- **`!command` shell execution**: User-typed `!` prefix flows through `TuiCommand::RunShell` → `agent_handler` → `tokio::task::spawn_blocking(execute_shell_command)`. An immediate `AgentEvent::ShellRunning` gives the user instant feedback (yellow "Running…" in the TUI). On completion, output is decoded via UTF-8-first-then-GetACP-MultiByteToWideChar (handles Chinese GBK/CP936 on Windows pipes), pushed to `SharedMemory` as a User message, and sent to the TUI via `AgentEvent::ShellOutput`.
+- **Watchdog with early-exit signal**: `Arc<AtomicBool>` lets the watchdog thread poll every 100ms and exit immediately when the command completes, rather than sleeping the full 30s timeout. `done.store(true, Relaxed)` is called after `wait_with_output()` returns; the watchdog checks the flag and returns early. Without this, `watchdog.join()` blocks for the entire timeout duration even for 15ms commands.
+- **Windows pipe encoding**: cmd built-ins (`dir`, `echo`, `type`) output in the system ANSI code page (GBK/CP936 on Chinese Windows) when stdout is a pipe — `chcp 65001` does not affect pipes. The `decode_stdout()` helper in both `event.rs` and `tool_shell.rs` tries `std::str::from_utf8` first (modern CLI tools like git/cargo/rustc output valid UTF-8), then falls back to `GetACP()` + `MultiByteToWideChar()`. No external crates needed — the FFI declarations are `unsafe extern "system"` linking against kernel32.
 
 ### Roadmap (from README)
 
@@ -196,7 +201,7 @@ The project is in **Phase 1** (MVP). Completed and next:
 - [x] `tools/fs.rs` + file-editing tools — `WorkspaceFs` sandbox + `ReadTool` / `WriteTool` / `EditTool` / `GlobTool` / `GrepTool` / `LsTool`
 - [x] `tools/tool_shell.rs` — `ShellTool` for executing CLI commands with timeout; TUI confirmation via async oneshot handshake (`Y`/`n`)
 - [x] `core/agent.rs` — main loop with `run_loop()` (batch) and `run_with_events()` (streaming via `AgentEvent` channel), `max_steps` guard, tool-call dispatch via `ToolRegistry`
-- [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands, status bar. Default mode; `--no-tui` for legacy CLI.
+- [x] `tui/` — ratatui chat interface: scrollable history, real-time token display, styled tool calls, input with cursor/history, slash commands, `!command` shell execution with async watchdog and Windows encoding fix, status bar. Default mode; `--no-tui` for legacy CLI.
 - [x] `tools/schema.rs` — `generate_schema<T: JsonSchema>()` helper for auto-generating tool JSON Schema from typed args structs (schemars integration)
 
 Phases 2 and 3 cover streaming UX via mpsc, structured output, RAG with vector DB, and observability with `tracing`.

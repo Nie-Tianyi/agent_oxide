@@ -265,7 +265,7 @@ cmd_tx ───── TuiCommand ──────────────→ 
 agent_rx ←── AgentEvent ─────────────── agent_tx
 ```
 
-**`ChatMessage` 变体（7 种）**：`User`, `Assistant`, `Reasoning`, `ToolCall { id, name, args, state }`, `System`, `ShellConfirm { tool_call_id, command, responded }`, `Error` —— 每种在 `ui.rs` 中有独立渲染样式。
+**`ChatMessage` 变体（8 种）**：`User`, `Assistant`, `Reasoning`, `ToolCall { id, name, args, state }`, `System`, `ShellConfirm { tool_call_id, command, responded }`, `ShellOutput { command, state: ShellOutputState }`, `Error` —— 每种在 `ui.rs` 中有独立渲染样式。`ShellOutputState` 用于 `!command` 前缀：`Running` 显示黄色 "Running…"，`Complete(output)` 显示实际输出。
 
 **`apply_event` 流式状态机**：
 
@@ -277,11 +277,13 @@ agent_rx ←── AgentEvent ─────────────── agen
 | `ToolCallArgsDelta { id, delta }` | 按 id 查找，追加 args |
 | `ToolResult { id, name, output }` | 按 id 查找，设置 `state: Complete(output)` |
 | `ConfirmShell { tool_call_id, command }` | 创建 `ShellConfirm { responded: false }`，触发用户确认提示 |
+| `ShellRunning { command }` | 创建 `ShellOutput { state: Running }`（`!command` 即时反馈） |
+| `ShellOutput { command, output }` | 查找匹配的 Running 条目，更新为 `Complete(output)` |
 | `Done` | 设置 `streaming = false` |
 
-**键盘操作**：Enter（发送）、Ctrl+C（取消/退出）、Esc（取消）、Ctrl+D（输入为空时退出）、PgUp/PgDown（滚动）、↑/↓（历史）、←/→/Home/End（光标移动）、Y/n（批准/拒绝 Shell 命令）。
+**键盘操作**：Enter（发送）、Ctrl+C（取消/退出）、Esc（取消）、Ctrl+D（输入为空时退出）、PgUp/PgDown（滚动）、↑/↓（历史）、←/→/Home/End（光标移动）、Y/n（批准/拒绝 Shell 命令）。`!<命令>` 前缀直接在 TUI 中执行 Shell 命令，输出实时显示并注入到 Agent 对话上下文；`!!` 作为转义符，允许以 `!` 开头的普通文本。
 
-**斜杠命令**（本地处理）：`/exit`, `/clear`, `/stats`, `/tools`, `/help`。
+**斜杠命令**（本地处理）：`/exit`, `/clear`, `/stats`, `/tools`, `/help`。**Bang 前缀**（`!<命令>`）：在沙箱根目录下异步执行 Shell 命令，先即时显示 "Running…" 后替换为捕获的 stdout/stderr。输出作为 User 消息注入 `SharedMemory`，Agent 在后续对话轮次中可以"看到"命令结果。
 
 **事件循环**：50ms 轮询间隔，每帧后 drain agent 事件，收集到 `Vec` 后在 `terminal.draw()` 释放不可变借用后应用，确保渲染流畅。
 
@@ -295,6 +297,9 @@ agent_rx ←── AgentEvent ─────────────── agen
 | 通道桥接 | `mpsc::unbounded_channel` | TUI 主线程 ↔ Agent 异步任务 |
 | 批量锁操作 | Agent::execute_all | 工具结果收集后一次写锁写入 |
 | 异步确认握手 | `PendingConfirmations` + oneshot | Shell 命令执行前的用户审批（Agent 暂停 → TUI 提示 → 用户 Y/n → Agent 继续） |
+| `!command` 异步执行 | `TuiCommand::RunShell` → `spawn_blocking` → `AgentEvent::ShellRunning/ShellOutput` | 用户命令通过 channel 流转到后台线程执行，即时显示状态，输出注入 Memory |
+| Watchdog 早退信号 | `Arc<AtomicBool>` | Watchdog 线程每 100ms 检查标志位，命令完成即刻退出，不阻塞 join() |
+| Windows 管道编码 | `decode_stdout()`: UTF-8 → `GetACP()` → `MultiByteToWideChar()` | 解决 cmd 管道输出 GBK/CP936 中文乱码，无外部依赖 |
 | 指数退避重试 | `stream_with_retry` | 瞬时网络错误的健壮性保障 |
 
 ## 开发路线

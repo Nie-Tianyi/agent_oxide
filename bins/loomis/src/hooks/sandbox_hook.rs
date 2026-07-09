@@ -198,7 +198,8 @@ impl AgentHook for SandboxHook {
                 command: tool_call.function.arguments.clone(),
                 verdict: "allowed".into(),
                 outcome: if observation.len() > 100 {
-                    format!("{}...", &observation[..100])
+                    let boundary = observation.floor_char_boundary(100);
+                    format!("{}...", &observation[..boundary])
                 } else {
                     observation.to_string()
                 },

@@ -38,7 +38,7 @@ pub struct EngineContext<C: LLMClient> {
     /// Model to use for full-memory summarisation compaction.
     /// When `Some`, the agent checks for [`memory::CompactSignal::NeedsCompact`]
     /// after each turn and triggers an LLM summarisation pass.  Use a cheap /
-    /// fast model here (e.g. `"deepseek-flash"`).
+    /// fast model here (e.g. `"deepseek-v4-flash"`).
     /// When `None`, only tool-output (micro) compaction runs.
     pub compact_model: Option<String>,
 }

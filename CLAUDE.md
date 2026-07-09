@@ -45,8 +45,8 @@ agent_oxide/
 | `provider` | `libs/` | Abstraction | `LLMClient` trait, `Message`, `Role`, `ToolCall`, `ToolDef`, `CompletionRequest`, `CompletionResponse`, `ProviderError`, `StreamChunk`, `Delta` |
 | `deepseek` | `libs/` | Concrete | `DeepSeekClient` (impl `LLMClient`), `DeepSeekStream` (SSE parser), `DeepSeekRequest`, `DeepSeekError` |
 | `tools` | `libs/` | Abstraction | `Tool` trait (sync, `Send+Sync`), `ToolRegistry`, `WorkspaceFs`, `SandboxConfig`, `ToolError`, `FsError`, `generate_schema` |
-| `memory` | `libs/` | Abstraction | `Memory` (in-memory buffer), `SharedMemory` (`Arc<RwLock<Memory>>`), `MemoryBuilder`, two-phase compaction, `save_conversation`/`load_conversation`/`list_threads` |
-| `engine` | `libs/` | Abstraction | `Agent`, `AgentEvent` (Token, ToolCallStart, ToolResult, etc.), `AgentError`, `AgentHook` trait (on_run_start, before_tool_call, etc.), `EngineContext` |
+| `memory` | `libs/` | Abstraction | `Memory` (in-memory buffer), `SharedMemory` (`Arc<RwLock<Memory>>`), `MemoryBuilder`, two-tier compaction (MicroCompact + LLM summarisation), `save_conversation`/`load_conversation`/`list_threads` |
+| `engine` | `libs/` | Abstraction | `Agent`, `AgentEvent` (Token, ToolCallStart, ToolResult, etc.), `AgentError`, `AgentHook` trait (on_run_start, before_tool_call, etc.), `EngineContext` (with compaction config), `maybe_compact()` |
 | `loomis` | `bins/` | Binary + Lib | Concrete tools (CalculatorTool, ReadTool, ShellTool, ...), sandbox system (SandboxHook, ShellFilter, AuditLogger, ResourceTracker, EnvSanitizer), TUI (ratatui), `build_coding_agent()`, `compact_with_deepseek()`, `main.rs` |
 
 ### Dependency graph
@@ -67,7 +67,7 @@ provider (no internal deps)
 
 - **`LLMClient` trait** — abstraction over LLM providers. Uses `#[async_trait]` for dyn-compatibility. `DeepSeekClient` in `libs/deepseek/` is the reference implementation.
 - **`Tool` trait** — sync, object-safe (no `async_trait`). CPU-bound tools run inline; I/O-heavy ones use `spawn_blocking` internally.
-- **Two-phase compaction** — `drain_for_compact()` + `apply_compact()`. System messages are never drained. `compact_with_deepseek()` is in the `loomis` crate.
+- **Two-tier compaction** — (1) **MicroCompact**: `compact_tool_output()` / `to_compact_context_vec()` clears old tool outputs from high-volume tools (read, shell, grep, glob, edit, write, ls), replacing content with `[Old tool result content cleared]` while keeping the most recent `keep_recent` intact. Non-mutating variant used before each LLM API call so the model sees compacted context but persistence sees full content. (2) **LLM summarisation**: `drain_for_compact()` + `apply_compact()` + `maybe_compact()`. When the character budget is exceeded, old non-System messages are drained, summarised by an LLM, and the summary is inserted as a new System message. System messages are never drained. Both tiers are configured via `EngineContext`.
 - **`AgentHook` trait** — lifecycle callbacks (on_run_start, on_llm_start, on_llm_end, before_tool_call, after_tool_call). `before_tool_call` can return `Err` to block tool execution. Concrete hooks in `loomis` crate.
 - **`AgentEvent` stream** — real-time tokens, tool call starts/args/results via `mpsc::unbounded_channel`. The TUI consumes these for rendering.
 - **`WorkspaceFs` sandbox** — all file paths canonicalized and checked against `workspace_root`. Enforces file-size caps, extension blocklist, hidden-file protection, binary-content detection, and TOCTOU re-checks. Policy driven by [`SandboxConfig`](libs/tools/src/sandbox/config.rs) (loaded from `.loomis/config.toml`).
@@ -107,3 +107,4 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 - [ ] RAG/vector DB support (Phase 2)
 - [ ] `tracing` observability (Phase 3)
 - [x] Multi-layered sandbox — WorkspaceFs hardening + ShellFilter + SandboxHook + ResourceTracker + AuditLogger
+- [x] Two-tier compaction — MicroCompact (tool output clearing) + LLM summarisation (`maybe_compact`)

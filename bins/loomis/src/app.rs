@@ -87,6 +87,7 @@ pub fn build_coding_agent(
     api_key: &str,
     workspace_root: &Path,
     model: &str,
+    flash_model: &str,
     sandbox_config: &SandboxConfig,
 ) -> AgentKit {
     // ── Channels ──────────────────────────────────────────────
@@ -156,7 +157,7 @@ pub fn build_coding_agent(
             .map(|s| s.to_string())
             .collect(),
         // Macro-compact: full LLM summarisation when over budget
-        compact_model: Some(model.to_string()),
+        compact_model: Some(flash_model.to_string()),
     };
 
     let agent = Agent::new(ctx);

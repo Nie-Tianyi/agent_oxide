@@ -131,7 +131,7 @@ async fn main() {
         memory: memory.clone(),
         tools: registry,
         hooks: vec![],       // 无钩子
-        model: "deepseek-chat".into(),
+        model: "deepseek-v4-pro".into(),
         max_steps: 20,
         max_retries: 3,
         streaming: false,    // 非流式，简单输出
@@ -211,7 +211,7 @@ pub struct CompletionRequest {
 使用 Builder 模式构建：
 
 ```rust
-let request = CompletionRequest::new("deepseek-chat", messages)
+let request = CompletionRequest::new("deepseek-v4-pro", messages)
     .with_stream(true)
     .with_tools(tools)
     .with_max_tokens(4096);
@@ -692,7 +692,7 @@ use provider::{Message, Role};
 use tokio::sync::mpsc;
 use tools::{ToolRegistry, WorkspaceFs};
 
-pub fn build_coding_agent(api_key: &str, workspace_root: &Path, model: &str) -> Agent<DeepSeekClient> {
+pub fn build_coding_agent(api_key: &str, workspace_root: &Path, model: &str, flash_model: &str) -> Agent<DeepSeekClient> {
     // 1. 创建事件通道（用于 TUI/CLI 获取实时进度）
     let (agent_tx, agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
 
@@ -1039,7 +1039,7 @@ async fn main() {
         memory: memory.clone(),
         tools: registry,
         hooks: vec![Box::new(ReviewProgressHook)],
-        model: "deepseek-chat".into(),
+        model: "deepseek-v4-pro".into(),
         max_steps: 15,
         max_retries: 3,
         streaming: true,

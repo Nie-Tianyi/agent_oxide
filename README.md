@@ -31,7 +31,7 @@ Loomis 是一个纯 Rust（2024 edition）编写的 **AI 编码助手**。它在
 - **Agent 主循环** — `run_loop()` 批量模式 + `run_with_events()` 实时流式模式，通过 `mpsc` 通道推送事件，`max_steps` 防止无限循环
 - **AgentHook 生命周期** — `on_run_start`, `before_tool_call`, `after_tool_call` 等钩子，支持危险命令拦截、进度展示、UI 事件转发
 - **可插拔工具系统** — `Tool` trait + `ToolRegistry`，内置计算器、Shell 命令执行、文件读写/编辑、glob 文件匹配、grep 内容搜索、ls 目录列表等工具，统一由 `WorkspaceFs` 沙箱隔离
-- **对话记忆管理** — 可配置压缩阈值，两阶段压缩（`drain_for_compact` → `apply_compact`），`Arc<RwLock<Memory>>` 多任务共享，系统消息永不被压缩
+- **对话记忆管理** — 双层压缩架构：MicroCompact（工具输出清理）在每次 API 调用前自动清除旧工具输出，保持上下文精简；LLM 摘要压缩（`drain_for_compact` → `apply_compact`）在字符预算超限时触发完整对话总结。`Arc<RwLock<Memory>>` 多任务共享，系统消息永不被压缩
 - **对话持久化** — 自动保存到 `.loomis/threads/`（JSON + Markdown），多线程命名管理，`/resume` 弹窗选择器恢复历史对话，`/save <name>` 手动命名快照
 - **终端交互界面** — [ratatui](https://ratatui.rs/) + [crossterm](https://crates.io/crates/crossterm) 打造，支持实时流式 Token、工具调用状态展示、滚动历史、斜杠命令、线程选择器弹窗
 
@@ -66,7 +66,7 @@ cargo run -p loomis --release -- --no-tui
 ### 测试与检查
 
 ```bash
-cargo test --all           # 运行所有测试（219 个）
+cargo test --all           # 运行所有测试（248 个）
 cargo build -p loomis      # 仅构建二进制 crate
 cargo clippy --all         # 代码检查
 ```
@@ -111,8 +111,8 @@ provider (无内部依赖)
 | `provider` | `libs/` | 抽象 | `LLMClient` trait, `Message`, `Role`, `ToolCall`, `ToolDef`, `CompletionRequest`, `CompletionResponse`, `ProviderError`, `StreamChunk`, `Delta` |
 | `deepseek` | `libs/` | 具体实现 | `DeepSeekClient` (impl `LLMClient`), `DeepSeekStream` (SSE 解析管道), `DeepSeekRequest`, `DeepSeekError` |
 | `tools` | `libs/` | 抽象 | `Tool` trait (sync, `Send+Sync`), `ToolRegistry`, `WorkspaceFs`, `SandboxConfig`, `ToolError`, `FsError`, `generate_schema` |
-| `memory` | `libs/` | 抽象 | `Memory` (内存缓冲区), `SharedMemory` (`Arc<RwLock<Memory>>`), `MemoryBuilder`, 两阶段压缩, `save_conversation`/`load_conversation`/`list_threads` |
-| `engine` | `libs/` | 抽象 | `Agent`, `AgentEvent` (Token, ToolCallStart, ToolResult 等), `AgentError`, `AgentHook` trait, `EngineContext` |
+| `memory` | `libs/` | 抽象 | `Memory` (内存缓冲区), `SharedMemory` (`Arc<RwLock<Memory>>`), `MemoryBuilder`, 双层压缩（MicroCompact + LLM 摘要）, `save_conversation`/`load_conversation`/`list_threads` |
+| `engine` | `libs/` | 抽象 | `Agent`, `AgentEvent` (Token, ToolCallStart, ToolResult 等), `AgentError`, `AgentHook` trait, `EngineContext`（含压缩配置）, `maybe_compact()` |
 | `loomis` | `bins/` | 二进制 + 库 | 具体工具 (CalculatorTool, ReadTool, ShellTool 等), 沙箱系统 (SandboxHook, ShellFilter, AuditLogger, ResourceTracker, EnvSanitizer), TUI (ratatui), `build_coding_agent()`, `compact_with_deepseek()`, `main.rs` |
 
 ### Agent 主循环 (`libs/engine/`)
@@ -203,18 +203,45 @@ pub trait Tool: Send + Sync {
 
 ### 记忆与持久化 (`libs/memory/`)
 
-**两阶段压缩**：
+**双层压缩架构** — 两层协同工作，在保持对话结构的同时控制上下文大小：
+
+#### 第 1 层：MicroCompact（工具输出清理）
+
+轻量级压缩，在每次 LLM API 调用前自动执行。将旧工具输出（read、shell、grep、glob、edit、write、ls）的内容替换为 `[Old tool result content cleared]`，同时保留最近 `keep_recent` 条输出不变。
+
+- **零 API 成本** — 纯字符串替换，无额外 LLM 调用
+- **非破坏性** — `to_compact_context_vec()` 返回压缩副本，原始 `Memory.messages` 保持不变，持久化层仍保存完整内容
+- **保留结构** — tool-call / tool-result 配对关系完整保留，模型仍能理解对话流程
+
+#### 第 2 层：LLM 摘要压缩
+
+当对话总字符数超过 `compact_threshold`（默认 2M 字符）时触发。排出旧的非 System 消息，发送给 LLM 进行总结，将摘要作为新的 System 消息插入。
 
 ```rust
 // Phase 1: 排空旧的非 System 消息
 let drained = mem.drain_for_compact();
-// Phase 2: 外部总结后应用
+// Phase 2: LLM 生成摘要
+let summary = llm.generate(summarise_prompt).await;
+// Phase 3: 插入摘要
 mem.apply_compact(summary);
 ```
 
 - System 消息永不被排空
 - 字符数阈值而非 Token 数（2M 字符 ≈ 500k–1M Token）
-- `compact_with_deepseek()` 在 `loomis` crate 中，与引擎解耦
+- 由 `Agent::maybe_compact()` 在 agent 循环中自动触发
+- `EngineContext.compact_model` 设为 `None` 可禁用此层
+
+**配置（EngineContext）**：
+
+```rust
+// 第 1 层 — MicroCompact（每次 API 调用前执行）
+compact_tool_outputs: true,
+keep_recent_tool_outputs: 5,
+compactable_tool_names: {"read", "shell", "grep", "glob", "edit", "write", "ls"},
+
+// 第 2 层 — LLM 摘要（超预算时触发）
+compact_model: Some("deepseek-v4-flash".into()),
+```
 
 ### TUI 交互界面 (`bins/loomis/src/tui/`)
 
@@ -259,7 +286,7 @@ let ctx = EngineContext {
     memory: Arc::new(RwLock::new(Memory::new())),
     tools: Arc::new(my_registry),
     hooks: vec![Box::new(MyCustomHook)],
-    model: "deepseek-chat".into(),
+    model: "deepseek-v4-pro".into(),
     max_steps: 50,
     max_retries: 3,
     streaming: true,
@@ -283,6 +310,7 @@ agent.run_loop("Hello!").await?;
 
 - [x] `schemars` 驱动的自动 JSON Schema 生成
 - [x] 多层沙箱系统（ShellFilter + SandboxHook + AuditLogger + ResourceTracker）
+- [x] 双层压缩架构（MicroCompact 工具输出清理 + LLM 摘要压缩）
 - [ ] 其他 LLM 提供者实现（`libs/openai/`, `libs/anthropic/`）
 - [ ] Jinja 风格提示词模板引擎
 - [ ] 结构化输出

@@ -148,6 +148,15 @@ pub fn build_coding_agent(
         max_steps: 50,
         max_retries: 3,
         streaming: true,
+        // Micro-compact: clear old tool outputs before each API call
+        compact_tool_outputs: true,
+        keep_recent_tool_outputs: memory::DEFAULT_KEEP_RECENT_TOOL_OUTPUTS,
+        compactable_tool_names: memory::DEFAULT_COMPACTABLE_TOOLS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        // Macro-compact: full LLM summarisation when over budget
+        compact_model: Some(model.to_string()),
     };
 
     let agent = Agent::new(ctx);

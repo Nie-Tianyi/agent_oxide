@@ -6,8 +6,9 @@ pub mod memory;
 pub mod persistence;
 
 pub use memory::{
-    CompactSignal, DEFAULT_COMPACT_CHARS, DEFAULT_KEEP_LAST_N, Memory, MemoryBuilder, MemoryError,
-    SharedMemory,
+    COMPACTED_TOOL_OUTPUT_PLACEHOLDER, CompactSignal, DEFAULT_COMPACT_CHARS,
+    DEFAULT_COMPACTABLE_TOOLS, DEFAULT_KEEP_LAST_N, DEFAULT_KEEP_RECENT_TOOL_OUTPUTS, Memory,
+    MemoryBuilder, MemoryError, SharedMemory,
 };
 pub use persistence::{
     ThreadInfo, default_thread_name, generate_thread_name, list_threads, load_conversation,

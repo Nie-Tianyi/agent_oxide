@@ -156,9 +156,19 @@ impl<C: LLMClient> Agent<C> {
             }
             steps += 1;
 
+            // Full LLM compaction when over budget (before fetching messages).
+            self.maybe_compact().await?;
+
             let messages = {
                 let mem = self.ctx.memory.read().unwrap();
-                mem.to_context_vec()
+                if self.ctx.compact_tool_outputs {
+                    mem.to_compact_context_vec(
+                        self.ctx.keep_recent_tool_outputs,
+                        &self.ctx.compactable_tool_names,
+                    )
+                } else {
+                    mem.to_context_vec()
+                }
             };
 
             let tools = self.ctx.tools.to_tool_defs();
@@ -286,9 +296,19 @@ impl<C: LLMClient> Agent<C> {
             }
             steps += 1;
 
+            // Full LLM compaction when over budget (before fetching messages).
+            self.maybe_compact().await?;
+
             let messages = {
                 let mem = self.ctx.memory.read().unwrap();
-                mem.to_context_vec()
+                if self.ctx.compact_tool_outputs {
+                    mem.to_compact_context_vec(
+                        self.ctx.keep_recent_tool_outputs,
+                        &self.ctx.compactable_tool_names,
+                    )
+                } else {
+                    mem.to_context_vec()
+                }
             };
 
             let tools = self.ctx.tools.to_tool_defs();
@@ -398,6 +418,81 @@ impl<C: LLMClient> Agent<C> {
                 return Ok(content);
             }
         }
+    }
+}
+
+// ── LLM Compaction ────────────────────────────────────────────────────────────
+
+impl<C: LLMClient> Agent<C> {
+    /// Check whether full LLM compaction is needed and run it if so.
+    ///
+    /// Called at the start of each agent loop iteration.
+    /// When [`EngineContext::compact_model`] is `Some`, this checks
+    /// [`Memory::needs_compact`] and runs an LLM summarisation pass
+    /// (drain → summarise → apply) to bring the conversation back
+    /// under the character budget.
+    async fn maybe_compact(&self) -> Result<(), AgentError> {
+        let compact_model = match &self.ctx.compact_model {
+            Some(m) => m.clone(),
+            None => return Ok(()),
+        };
+
+        let needs = {
+            let mem = self.ctx.memory.read().unwrap();
+            mem.needs_compact()
+        };
+
+        if !needs {
+            return Ok(());
+        }
+
+        let old = {
+            let mut mem = self.ctx.memory.write().unwrap();
+            mem.drain_for_compact()
+        };
+
+        if old.is_empty() {
+            return Ok(());
+        }
+
+        let transcript: String = old
+            .iter()
+            .map(|m| format!("[{}]: {}", role_label(m.role), m.content))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        let prompt = format!(
+            "Summarise the following conversation history concisely. \
+             Preserve key facts, decisions, and context. \
+             Output only the summary, no preamble:\n\n{transcript}"
+        );
+
+        let request =
+            CompletionRequest::new(&compact_model, vec![Message::new(Role::User, prompt)]);
+
+        let response = self.ctx.llm.generate(request).await?;
+
+        let summary = response
+            .choices
+            .first()
+            .and_then(|c| c.message.content.clone())
+            .unwrap_or_default();
+
+        {
+            let mut mem = self.ctx.memory.write().unwrap();
+            mem.apply_compact(summary);
+        }
+
+        Ok(())
+    }
+}
+
+const fn role_label(role: Role) -> &'static str {
+    match role {
+        Role::System => "System",
+        Role::User => "User",
+        Role::Assistant => "Assistant",
+        Role::Tool => "Tool",
     }
 }
 

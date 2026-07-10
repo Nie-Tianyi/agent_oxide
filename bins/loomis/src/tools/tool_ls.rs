@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{EntryType, FsError, ToolError, tool};
+use tools::{EntryType, FsError, ProgressStream, ToolError, tool};
 
 /// Ls 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -61,29 +61,28 @@ impl LsTool {
         Self { fs }
     }
 
-    fn execute(&self, args: LsArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: LsArgs) -> Result<ProgressStream, ToolError> {
         let path = args.path.as_deref().filter(|s| !s.is_empty());
 
         let entries = self.fs.ls(path).map_err(map_fs_err)?;
 
-        if entries.is_empty() {
-            return Ok("(empty directory)".to_string());
-        }
-
-        let output: String = entries
-            .iter()
-            .map(|e| {
-                let type_char = match e.entry_type {
-                    EntryType::Dir => "d",
-                    EntryType::Symlink => "l",
-                    EntryType::File => "-",
-                };
-                format!("{} {:>8}  {}", type_char, format_size(e.size), e.name)
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(output)
+        let output = if entries.is_empty() {
+            "(empty directory)".to_string()
+        } else {
+            entries
+                .iter()
+                .map(|e| {
+                    let type_char = match e.entry_type {
+                        EntryType::Dir => "d",
+                        EntryType::Symlink => "l",
+                        EntryType::File => "-",
+                    };
+                    format!("{} {:>8}  {}", type_char, format_size(e.size), e.name)
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -151,7 +150,7 @@ mod tests {
     #[test]
     fn test_ls_root_empty() {
         let (_dir, tool) = setup();
-        let result = Tool::execute(&tool, r#"{}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{}"#).unwrap().poll_done();
         assert!(result.contains("(empty directory)"));
     }
 
@@ -161,7 +160,7 @@ mod tests {
         write_file(&dir, "foo.txt", "hello");
         std::fs::create_dir(dir.path().join("bar")).unwrap();
 
-        let result = Tool::execute(&tool, r#"{}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{}"#).unwrap().poll_done();
         // 目录优先
         let lines: Vec<&str> = result.lines().collect();
         assert_eq!(lines.len(), 2);
@@ -177,7 +176,9 @@ mod tests {
         write_file(&dir, "sub/a.txt", "");
         write_file(&dir, "sub/b.txt", "");
 
-        let result = Tool::execute(&tool, r#"{"path": "sub"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"path": "sub"}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("a.txt"));
         assert!(result.contains("b.txt"));
     }
@@ -187,7 +188,7 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "file.txt", "");
 
-        let err = Tool::execute(&tool, r#"{"path": "file.txt"}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{"path": "file.txt"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
@@ -195,7 +196,7 @@ mod tests {
     fn test_ls_without_path_param() {
         let (_dir, tool) = setup();
         // 不传 path 参数应列出根目录
-        let result = Tool::execute(&tool, "{}").unwrap();
+        let result = Tool::execute_stream(&tool, "{}").unwrap().poll_done();
         assert!(result.contains("(empty directory)"));
     }
 }

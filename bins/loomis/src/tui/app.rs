@@ -32,6 +32,8 @@ pub enum ChatMessage {
         name: String,
         args: String,
         state: ToolCallState,
+        /// Latest progress message while tool is Running (shown inline).
+        progress_line: Option<String>,
         timestamp: String,
     },
     /// System-level message (slash commands, info).
@@ -252,6 +254,7 @@ impl App {
                     name,
                     args: String::new(),
                     state: ToolCallState::Running,
+                    progress_line: None,
                     timestamp: ChatMessage::now_timestamp(),
                 });
             }
@@ -278,6 +281,23 @@ impl App {
                 }
                 // Tool results mean we're still between tool calls —
                 // keep `streaming = true` so the loop looks correct.
+            }
+
+            AgentEvent::ToolProgress { id, message, .. } => {
+                for msg in self.messages.iter_mut().rev() {
+                    if let ChatMessage::ToolCall {
+                        id: mid,
+                        state,
+                        progress_line,
+                        ..
+                    } = msg
+                        && *mid == id
+                        && matches!(state, ToolCallState::Running)
+                    {
+                        *progress_line = Some(message);
+                        break;
+                    }
+                }
             }
 
             AgentEvent::ShellRunning { command } => {

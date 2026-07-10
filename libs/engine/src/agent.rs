@@ -14,7 +14,7 @@ use provider::{
     CompletionRequest, CompletionResponse, LLMClient, Message, ProviderError, Role, StreamChunk,
     ToolCall, ToolCallFunction, ToolCallType,
 };
-use tools::ToolError;
+use tools::{Progress, ToolError};
 
 use crate::context::EngineContext;
 
@@ -85,6 +85,12 @@ pub enum AgentEvent {
     ShellApprovalRequested {
         tool_call_id: String,
         command: String,
+    },
+    /// Real-time progress update from a running tool.
+    ToolProgress {
+        id: String,
+        name: String,
+        message: String,
     },
     Done,
 }
@@ -239,13 +245,30 @@ impl<C: LLMClient> Agent<C> {
                         continue;
                     }
 
-                    let result = self
+                    // ── Pull from progress stream ────────────────────
+                    let observation = match self
                         .ctx
                         .tools
-                        .execute(&tc.function.name, &tc.function.arguments);
-
-                    let observation = match result {
-                        Some(Ok(output)) => output,
+                        .execute_stream(&tc.function.name, &tc.function.arguments)
+                    {
+                        Some(Ok(mut stream)) => {
+                            let mut final_output = String::new();
+                            while let Some(progress) = stream.next().await {
+                                match progress {
+                                    Progress::InProgress(msg) => {
+                                        if let Some(ref tx) = tx {
+                                            let _ = tx.send(AgentEvent::ToolProgress {
+                                                id: tc.id.clone(),
+                                                name: tc.function.name.clone(),
+                                                message: msg,
+                                            });
+                                        }
+                                    }
+                                    Progress::Done(output) => final_output = output,
+                                }
+                            }
+                            final_output
+                        }
                         Some(Err(e)) => e.to_string(),
                         None => format!("Tool not found: {}", tc.function.name),
                     };
@@ -388,12 +411,30 @@ impl<C: LLMClient> Agent<C> {
                         continue;
                     }
 
-                    let result = self
+                    // ── Pull from progress stream ────────────────────
+                    let observation = match self
                         .ctx
                         .tools
-                        .execute(&tc.function.name, &tc.function.arguments);
-                    let observation = match result {
-                        Some(Ok(output)) => output,
+                        .execute_stream(&tc.function.name, &tc.function.arguments)
+                    {
+                        Some(Ok(mut stream)) => {
+                            let mut final_output = String::new();
+                            while let Some(progress) = stream.next().await {
+                                match progress {
+                                    Progress::InProgress(msg) => {
+                                        if let Some(ref tx) = tx {
+                                            let _ = tx.send(AgentEvent::ToolProgress {
+                                                id: tc.id.clone(),
+                                                name: tc.function.name.clone(),
+                                                message: msg,
+                                            });
+                                        }
+                                    }
+                                    Progress::Done(output) => final_output = output,
+                                }
+                            }
+                            final_output
+                        }
                         Some(Err(e)) => e.to_string(),
                         None => format!("Tool not found: {}", tc.function.name),
                     };

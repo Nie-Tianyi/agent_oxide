@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{FsError, ToolError, tool};
+use tools::{FsError, ProgressStream, ToolError, tool};
 
 /// Grep 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -65,23 +65,22 @@ impl GrepTool {
         Self { fs }
     }
 
-    fn execute(&self, args: GrepArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: GrepArgs) -> Result<ProgressStream, ToolError> {
         let matches = self
             .fs
             .grep(&args.pattern, args.path_glob.as_deref())
             .map_err(map_fs_err)?;
 
-        if matches.is_empty() {
-            return Ok("No matches found.".to_string());
-        }
-
-        let output: String = matches
-            .iter()
-            .map(|m| format!("{}:{}: {}", m.file_path, m.line_number, m.line_content))
-            .collect::<Vec<_>>()
-            .join("\n");
-
-        Ok(output)
+        let output = if matches.is_empty() {
+            "No matches found.".to_string()
+        } else {
+            matches
+                .iter()
+                .map(|m| format!("{}:{}: {}", m.file_path, m.line_number, m.line_content))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -137,7 +136,9 @@ mod tests {
             "fn main() {\n    let x = 1;\n}\nfn test() {}\n",
         );
 
-        let result = Tool::execute(&tool, r#"{"pattern": "fn "}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "fn "}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("fn main()"));
         assert!(result.contains("fn test()"));
         assert!(!result.contains("let x"));
@@ -150,7 +151,9 @@ mod tests {
         write_file(&dir, "tests/test.rs", "fn it_works() {}");
 
         let result =
-            Tool::execute(&tool, r#"{"pattern": "fn", "path_glob": "src/**/*.rs"}"#).unwrap();
+            Tool::execute_stream(&tool, r#"{"pattern": "fn", "path_glob": "src/**/*.rs"}"#)
+                .unwrap()
+                .poll_done();
         let normalized = result.replace('\\', "/");
         assert!(normalized.contains("src/lib.rs"));
         assert!(!normalized.contains("tests/"));
@@ -161,21 +164,23 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "f.txt", "hello world\n");
 
-        let result = Tool::execute(&tool, r#"{"pattern": "NOMATCH"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "NOMATCH"}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("No matches"));
     }
 
     #[test]
     fn test_grep_invalid_regex() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{"pattern": "[unclosed"}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{"pattern": "[unclosed"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_missing_pattern() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
@@ -184,7 +189,9 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "test.rs", "fn hello() {\n    println!();\n}\n");
 
-        let result = Tool::execute(&tool, r#"{"pattern": "fn"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "fn"}"#)
+            .unwrap()
+            .poll_done();
         // 格式: file_path:line_number: line_content
         assert!(result.contains("test.rs:1: fn hello()"));
     }

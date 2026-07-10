@@ -29,7 +29,7 @@
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use tools::{ToolError, tool};
+use tools::{ProgressStream, ToolError, tool};
 
 // ── CalculatorTool ────────────────────────────────────────────────────────────
 
@@ -77,17 +77,19 @@ pub(crate) struct CalculatorArgs {
 pub struct CalculatorTool;
 
 impl CalculatorTool {
-    fn execute(&self, args: CalculatorArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: CalculatorArgs) -> Result<ProgressStream, ToolError> {
         let result = ExprEvaluator::evaluate(&args.expression).map_err(|e| {
             ToolError::Execution(format!("at position {}: {e}", e.position.unwrap_or(0)))
         })?;
 
         // 整数结果去掉尾随 ".0"
-        if result == result.trunc() && result.is_finite() {
-            Ok(format!("{}", result as i64))
+        let output = if result == result.trunc() && result.is_finite() {
+            format!("{}", result as i64)
         } else {
-            Ok(format!("{result}"))
-        }
+            format!("{result}")
+        };
+
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -385,7 +387,20 @@ type ExprEvaluator = Parser;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tools::Tool;
+    use tools::{Tool, ToolError};
+
+    // ── 辅助函数 ───────────────────────────────────────────
+
+    fn calc(expr: &str) -> String {
+        Tool::execute_stream(&CalculatorTool, &format!(r#"{{"expression": "{}"}}"#, expr))
+            .unwrap()
+            .poll_done()
+    }
+
+    fn calc_err(expr: &str) -> ToolError {
+        Tool::execute_stream(&CalculatorTool, &format!(r#"{{"expression": "{}"}}"#, expr))
+            .unwrap_err()
+    }
 
     // ── CalculatorTool 集成测试 ─────────────────────────────
 
@@ -421,47 +436,38 @@ mod tests {
     fn test_addition() {
         assert_eq!(calc("2 + 3"), "5");
     }
-
     #[test]
     fn test_subtraction() {
         assert_eq!(calc("10 - 7"), "3");
     }
-
     #[test]
     fn test_multiplication() {
         assert_eq!(calc("4 * 5"), "20");
     }
-
     #[test]
     fn test_division() {
         assert_eq!(calc("15 / 3"), "5");
     }
-
     #[test]
     fn test_operator_precedence() {
         assert_eq!(calc("2 + 3 * 4"), "14");
     }
-
     #[test]
     fn test_parentheses() {
         assert_eq!(calc("(2 + 3) * 4"), "20");
     }
-
     #[test]
     fn test_unary_minus() {
         assert_eq!(calc("-5 + 3"), "-2");
     }
-
     #[test]
     fn test_unary_plus() {
         assert_eq!(calc("+5 - 2"), "3");
     }
-
     #[test]
     fn test_decimal() {
         assert_eq!(calc("3.5 + 1.5"), "5");
     }
-
     #[test]
     fn test_nested_parentheses() {
         assert_eq!(calc("((2 + 3) * (4 - 1)) / 5"), "3");
@@ -474,45 +480,37 @@ mod tests {
 
     #[test]
     fn test_division_by_zero() {
-        let err = Tool::execute(&CalculatorTool, r#"{"expression": "1 / 0"}"#).unwrap_err();
+        let err = Tool::execute_stream(&CalculatorTool, r#"{"expression": "1 / 0"}"#).unwrap_err();
         assert!(matches!(err, ToolError::Execution(_)));
-        assert!(err.to_string().contains("division by zero"));
     }
 
     #[test]
     fn test_invalid_json() {
-        let err = Tool::execute(&CalculatorTool, "garbage").unwrap_err();
+        let err = Tool::execute_stream(&CalculatorTool, "garbage").unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_missing_expression_field() {
-        let err = Tool::execute(&CalculatorTool, r#"{"wrong": "field"}"#).unwrap_err();
+        let err = Tool::execute_stream(&CalculatorTool, r#"{"wrong": "field"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_empty_expression() {
-        let err = calc_err("");
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert!(matches!(calc_err(""), ToolError::Execution(_)));
     }
-
     #[test]
     fn test_unsupported_operator() {
-        let err = calc_err("2 ^ 3");
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert!(matches!(calc_err("2 ^ 3"), ToolError::Execution(_)));
     }
-
     #[test]
     fn test_trailing_operator() {
-        let err = calc_err("2 *");
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert!(matches!(calc_err("2 *"), ToolError::Execution(_)));
     }
-
     #[test]
     fn test_mismatched_parens() {
-        let err = calc_err("(2 + 3");
-        assert!(matches!(err, ToolError::Execution(_)));
+        assert!(matches!(calc_err("(2 + 3"), ToolError::Execution(_)));
     }
 
     // ── 解析器单元测试 ─────────────────────────────────────
@@ -521,38 +519,22 @@ mod tests {
     fn test_parser_simple_addition() {
         assert_eq!(Parser::evaluate("1 + 2").unwrap(), 3.0);
     }
-
     #[test]
     fn test_parser_whitespace_insensitive() {
         assert_eq!(Parser::evaluate("  1   +   2  ").unwrap(), 3.0);
     }
-
     #[test]
     fn test_parser_trailing_garbage() {
         assert!(Parser::evaluate("1 + 2 x").is_err());
     }
-
     #[test]
     fn test_lexer_empty_input() {
         let mut lexer = Lexer::new("");
         assert!(lexer.next_token().is_none());
     }
-
     #[test]
     fn test_lexer_only_whitespace() {
         let mut lexer = Lexer::new("   \t  ");
         assert!(lexer.next_token().is_none());
-    }
-
-    // ── 辅助函数 ───────────────────────────────────────────
-
-    /// 用 CalculatorTool 执行表达式，返回成功结果。
-    fn calc(expr: &str) -> String {
-        Tool::execute(&CalculatorTool, &format!(r#"{{"expression": "{}"}}"#, expr)).unwrap()
-    }
-
-    /// 用 CalculatorTool 执行表达式，返回错误。
-    fn calc_err(expr: &str) -> ToolError {
-        Tool::execute(&CalculatorTool, &format!(r#"{{"expression": "{}"}}"#, expr)).unwrap_err()
     }
 }

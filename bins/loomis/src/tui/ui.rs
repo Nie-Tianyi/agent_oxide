@@ -229,6 +229,7 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
             name,
             args,
             state,
+            progress_line,
             timestamp,
             ..
         } => {
@@ -261,6 +262,21 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                             Span::styled(
                                 truncate_args(args, area_width),
                                 Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+                            ),
+                        ]));
+                    }
+                    // Progress line (if the tool reports real-time output)
+                    if let Some(msg) = progress_line {
+                        let display = msg.lines().next().unwrap_or(msg);
+                        let truncated =
+                            truncate_to_width(display, area_width.saturating_sub(8) as usize);
+                        lines.push(Line::from(vec![
+                            Span::raw("       "),
+                            Span::styled(
+                                truncated,
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::DIM),
                             ),
                         ]));
                     }

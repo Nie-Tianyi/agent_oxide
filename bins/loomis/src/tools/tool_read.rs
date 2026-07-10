@@ -10,7 +10,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{FsError, ToolError, tool};
+use tools::{FsError, ProgressStream, ToolError, tool};
 
 /// Read 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -69,14 +69,16 @@ impl ReadTool {
         Self { fs }
     }
 
-    fn execute(&self, args: ReadArgs) -> Result<String, ToolError> {
-        self.fs
+    fn execute_stream(&self, args: ReadArgs) -> Result<ProgressStream, ToolError> {
+        let output = self
+            .fs
             .read(
                 &args.file_path,
                 args.offset.map(|n| n as usize),
                 args.limit.map(|n| n as usize),
             )
-            .map_err(map_fs_err)
+            .map_err(map_fs_err)?;
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -143,7 +145,9 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "test.txt", "hello\nworld\n");
 
-        let result = Tool::execute(&tool, r#"{"file_path": "test.txt"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"file_path": "test.txt"}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("hello"));
         assert!(result.contains("world"));
     }
@@ -153,35 +157,36 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "test.txt", "1\n2\n3\n4\n5\n");
 
-        let result = Tool::execute(
+        let mut result = Tool::execute_stream(
             &tool,
             r#"{"file_path": "test.txt", "offset": 2, "limit": 2}"#,
         )
         .unwrap();
-        assert!(!result.contains("     1\t"));
-        assert!(result.contains("     2\t"));
-        assert!(result.contains("     3\t"));
-        assert!(!result.contains("     4\t"));
+        let output = result.poll_done();
+        assert!(!output.contains("     1\t"));
+        assert!(output.contains("     2\t"));
+        assert!(output.contains("     3\t"));
+        assert!(!output.contains("     4\t"));
     }
 
     #[test]
     fn test_read_not_found() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{"file_path": "nope.txt"}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{"file_path": "nope.txt"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_read_missing_field() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_read_bad_json() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, "garbage").unwrap_err();
+        let err = Tool::execute_stream(&tool, "garbage").unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 }

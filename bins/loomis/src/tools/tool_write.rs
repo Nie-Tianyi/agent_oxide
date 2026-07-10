@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{FsError, ToolError, tool};
+use tools::{FsError, ProgressStream, ToolError, tool};
 
 /// Write 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -58,16 +58,13 @@ impl WriteTool {
         Self { fs }
     }
 
-    fn execute(&self, args: WriteArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: WriteArgs) -> Result<ProgressStream, ToolError> {
         self.fs
             .write(&args.file_path, &args.content)
             .map_err(map_fs_err)?;
 
-        Ok(format!(
-            "Wrote {} bytes to {}",
-            args.content.len(),
-            args.file_path
-        ))
+        let output = format!("Wrote {} bytes to {}", args.content.len(), args.file_path);
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -121,28 +118,33 @@ mod tests {
     #[test]
     fn test_write_new_file() {
         let (dir, tool) = setup();
-        let result = Tool::execute(
+        let mut result = Tool::execute_stream(
             &tool,
             r#"{"file_path": "hello.txt", "content": "hello world"}"#,
         )
         .unwrap();
-        assert!(result.contains("hello.txt"));
-        assert!(result.contains("11 bytes"));
+        let output = result.poll_done();
+        assert!(output.contains("hello.txt"));
+        assert!(output.contains("11 bytes"));
         assert_eq!(read_file(&dir, "hello.txt"), "hello world");
     }
 
     #[test]
     fn test_write_overwrite() {
         let (dir, tool) = setup();
-        Tool::execute(&tool, r#"{"file_path": "f.txt", "content": "old"}"#).unwrap();
-        Tool::execute(&tool, r#"{"file_path": "f.txt", "content": "new"}"#).unwrap();
+        Tool::execute_stream(&tool, r#"{"file_path": "f.txt", "content": "old"}"#)
+            .unwrap()
+            .poll_done();
+        Tool::execute_stream(&tool, r#"{"file_path": "f.txt", "content": "new"}"#)
+            .unwrap()
+            .poll_done();
         assert_eq!(read_file(&dir, "f.txt"), "new");
     }
 
     #[test]
     fn test_write_nested_path() {
         let (dir, tool) = setup();
-        Tool::execute(
+        Tool::execute_stream(
             &tool,
             r#"{"file_path": "a/b/c/file.txt", "content": "deep"}"#,
         )
@@ -153,14 +155,16 @@ mod tests {
     #[test]
     fn test_write_empty_content() {
         let (dir, tool) = setup();
-        Tool::execute(&tool, r#"{"file_path": "empty.txt", "content": ""}"#).unwrap();
+        Tool::execute_stream(&tool, r#"{"file_path": "empty.txt", "content": ""}"#)
+            .unwrap()
+            .poll_done();
         assert_eq!(read_file(&dir, "empty.txt"), "");
     }
 
     #[test]
     fn test_missing_file_path() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{"content": "stuff"}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{"content": "stuff"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 }

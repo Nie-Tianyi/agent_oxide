@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use tools::{SandboxConfig, ToolError, tool};
+use tools::{ProgressStream, SandboxConfig, ToolError, tool};
 
 use crate::sandbox::env_sanitizer;
 use crate::sandbox::shell_filter::ShellFilter;
@@ -110,7 +110,7 @@ impl ShellTool {
         }
     }
 
-    fn execute(&self, args: ShellArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: ShellArgs) -> Result<ProgressStream, ToolError> {
         let command = args.command;
         if command.trim().is_empty() {
             return Err(ToolError::InvalidArgs(
@@ -181,11 +181,6 @@ impl ShellTool {
             }
             #[cfg(not(target_os = "windows"))]
             {
-                // Kill process group — requires setpgid(0, 0) before
-                // spawning the child, which std::process::Command does
-                // not expose.  We fall back to sending SIGKILL to the
-                // immediate child; orphaned grandchildren will be reaped
-                // by init.
                 let _ = Command::new("kill")
                     .args(["-9", &pid.to_string()])
                     .stdout(Stdio::null())
@@ -256,7 +251,8 @@ impl ShellTool {
             result.push_str(&format!("\n\n[exit code: {code}]"));
         }
 
-        Ok(result)
+        let output = result;
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -379,8 +375,9 @@ mod tests {
     #[test]
     fn test_execute_echo() {
         let tool = make_tool();
-        let result =
-            Tool::execute(&tool, r#"{"command": "echo hello"}"#).expect("echo should succeed");
+        let result = Tool::execute_stream(&tool, r#"{"command": "echo hello"}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("hello"), "got: {result}");
     }
 
@@ -391,7 +388,7 @@ mod tests {
         let cmd = r#"{"command": "echo %cd%"}"#;
         #[cfg(not(target_os = "windows"))]
         let cmd = r#"{"command": "pwd"}"#;
-        let result = Tool::execute(&tool, cmd).expect("pwd/echo cd should succeed");
+        let result = Tool::execute_stream(&tool, cmd).unwrap().poll_done();
         assert!(!result.is_empty());
     }
 
@@ -404,7 +401,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let cmd = r#"{"command": "exit 42"}"#;
 
-        let result = Tool::execute(&tool, cmd).expect("should not error on non-zero exit");
+        let result = Tool::execute_stream(&tool, cmd).unwrap().poll_done();
         // Should mention the exit code
         assert!(
             result.contains("exit code") || result.contains("42"),
@@ -415,7 +412,7 @@ mod tests {
     #[test]
     fn test_execute_missing_command() {
         let tool = make_tool();
-        let result = Tool::execute(&tool, r#"{"timeout_secs": 5}"#);
+        let result = Tool::execute_stream(&tool, r#"{"timeout_secs": 5}"#);
         match result {
             Err(ToolError::InvalidArgs(msg)) => {
                 assert!(msg.contains("command"), "got: {msg}");
@@ -427,7 +424,7 @@ mod tests {
     #[test]
     fn test_execute_empty_command() {
         let tool = make_tool();
-        let result = Tool::execute(&tool, r#"{"command": "   "}"#);
+        let result = Tool::execute_stream(&tool, r#"{"command": "   "}"#);
         match result {
             Err(ToolError::InvalidArgs(msg)) => {
                 assert!(msg.contains("command"), "got: {msg}");
@@ -439,7 +436,7 @@ mod tests {
     #[test]
     fn test_execute_bad_json() {
         let tool = make_tool();
-        let result = Tool::execute(&tool, "not json");
+        let result = Tool::execute_stream(&tool, "not json");
         match result {
             Err(ToolError::InvalidArgs(msg)) => {
                 assert!(msg.contains("invalid args"), "got: {msg}");
@@ -457,7 +454,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let cmd = r#"{"command": "true"}"#;
 
-        let result = Tool::execute(&tool, cmd).expect("should succeed");
+        let result = Tool::execute_stream(&tool, cmd).unwrap().poll_done();
         // Should indicate the command ran even though there's no output
         assert!(
             result.contains("no output") || result.is_empty(),
@@ -468,9 +465,11 @@ mod tests {
     #[test]
     fn test_execute_with_timeout_in_args() {
         let tool = make_tool();
-        let result = Tool::execute(&tool, r#"{"command": "echo fast", "timeout_secs": 10}"#)
-            .expect("should succeed");
-        assert!(result.contains("fast"), "got: {result}");
+        let mut result =
+            Tool::execute_stream(&tool, r#"{"command": "echo fast", "timeout_secs": 10}"#)
+                .expect("should succeed");
+        let output = result.poll_done();
+        assert!(output.contains("fast"), "got: {output}");
     }
 
     #[test]
@@ -482,7 +481,7 @@ mod tests {
         #[cfg(not(target_os = "windows"))]
         let cmd = r#"{"command": "echo error text >&2"}"#;
 
-        let result = Tool::execute(&tool, cmd).expect("should succeed");
+        let result = Tool::execute_stream(&tool, cmd).unwrap().poll_done();
         assert!(result.contains("error text"), "got: {result}");
     }
 }

@@ -55,13 +55,17 @@ impl ToolRegistry {
         self.tools.values().map(|t| t.as_ref().to_def()).collect()
     }
 
-    /// Dispatch execution by name.
+    /// Dispatch execution by name, returning a progress stream.
     ///
     /// - `None` — no tool found with that name.
-    /// - `Some(Ok(result))` — tool executed successfully.
-    /// - `Some(Err(e))` — tool execution failed.
-    pub fn execute(&self, name: &str, args: &str) -> Option<Result<String, ToolError>> {
-        self.tools.get(name).map(|tool| tool.execute(args))
+    /// - `Some(Ok(stream))` — tool is executing; pull [`Progress`] events from the stream.
+    /// - `Some(Err(e))` — tool failed to start.
+    pub fn execute_stream(
+        &self,
+        name: &str,
+        args: &str,
+    ) -> Option<Result<crate::ProgressStream, ToolError>> {
+        self.tools.get(name).map(|tool| tool.execute_stream(args))
     }
 }
 
@@ -81,6 +85,9 @@ pub fn tool_to_def(tool: &dyn Tool) -> ToolDef {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Progress;
+    use crate::ProgressStream;
+    use futures_util::StreamExt;
     use serde_json::Value;
 
     /// Minimal mock tool for testing the registry.
@@ -101,8 +108,8 @@ mod tests {
             serde_json::json!({"type": "object", "properties": {}})
         }
 
-        fn execute(&self, _args: &str) -> Result<String, ToolError> {
-            Ok("mock result".into())
+        fn execute_stream(&self, _args: &str) -> Result<ProgressStream, ToolError> {
+            Ok(ProgressStream::done("mock result".into()))
         }
     }
 
@@ -148,17 +155,21 @@ mod tests {
     fn test_execute_success() {
         let mut r = ToolRegistry::new();
         r.register(Arc::new(MockTool { name: "mock" }));
-        let result = r.execute("mock", "{}");
-        let Some(Ok(output)) = result else {
-            panic!("expected Some(Ok(_)), got {result:?}");
+        let Some(Ok(mut stream)) = r.execute_stream("mock", "{}") else {
+            panic!("expected Some(Ok(_))");
         };
-        assert_eq!(output, "mock result");
+        // Pull the single Done event.
+        let progress = futures_executor::block_on(stream.next());
+        match progress {
+            Some(Progress::Done(output)) => assert_eq!(output, "mock result"),
+            other => panic!("expected Progress::Done, got {other:?}"),
+        }
     }
 
     #[test]
     fn test_execute_missing_tool() {
         let r = ToolRegistry::new();
-        assert!(r.execute("nonexistent", "{}").is_none());
+        assert!(r.execute_stream("nonexistent", "{}").is_none());
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{FsError, ToolError, tool};
+use tools::{FsError, ProgressStream, ToolError, tool};
 
 /// Edit 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -79,15 +79,17 @@ impl EditTool {
         Self { fs }
     }
 
-    fn execute(&self, args: EditArgs) -> Result<String, ToolError> {
-        self.fs
+    fn execute_stream(&self, args: EditArgs) -> Result<ProgressStream, ToolError> {
+        let output = self
+            .fs
             .edit_lines(
                 &args.file_path,
                 args.start_line as usize,
                 args.end_line as usize,
                 &args.new_content,
             )
-            .map_err(map_fs_err)
+            .map_err(map_fs_err)?;
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -145,12 +147,13 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "f.txt", "line1\nline2\nline3\n");
 
-        let result = Tool::execute(
+        let mut result = Tool::execute_stream(
             &tool,
             r#"{"file_path": "f.txt", "start_line": 2, "end_line": 2, "new_content": "REPLACED"}"#,
         )
         .unwrap();
-        assert!(result.contains("Replaced"));
+        let output = result.poll_done();
+        assert!(output.contains("Replaced"));
         assert_eq!(read_file(&dir, "f.txt"), "line1\nREPLACED\nline3\n");
     }
 
@@ -159,11 +162,12 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "f.txt", "a\nb\nc\nd\ne\n");
 
-        Tool::execute(
+        Tool::execute_stream(
             &tool,
             r#"{"file_path": "f.txt", "start_line": 2, "end_line": 4, "new_content": "X\nY"}"#,
         )
-        .unwrap();
+        .unwrap()
+        .poll_done();
         assert_eq!(read_file(&dir, "f.txt"), "a\nX\nY\ne\n");
     }
 
@@ -172,7 +176,7 @@ mod tests {
         let (dir, tool) = setup();
         write_file(&dir, "f.txt", "a\nb\nc\n");
 
-        Tool::execute(
+        Tool::execute_stream(
             &tool,
             r#"{"file_path": "f.txt", "start_line": 2, "end_line": 2, "new_content": ""}"#,
         )
@@ -186,7 +190,7 @@ mod tests {
         write_file(&dir, "f.txt", "a\nb\n");
 
         // 替换超出行范围的"append"行为（替换不存在的行就变成 append）
-        Tool::execute(
+        Tool::execute_stream(
             &tool,
             r#"{"file_path": "f.txt", "start_line": 3, "end_line": 3, "new_content": "c"}"#,
         )
@@ -197,7 +201,7 @@ mod tests {
     #[test]
     fn test_missing_start_line() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(
+        let err = Tool::execute_stream(
             &tool,
             r#"{"file_path": "f.txt", "end_line": 1, "new_content": "x"}"#,
         )
@@ -208,7 +212,7 @@ mod tests {
     #[test]
     fn test_nonexistent_file() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(
+        let err = Tool::execute_stream(
             &tool,
             r#"{"file_path": "nope.txt", "start_line": 1, "end_line": 1, "new_content": "x"}"#,
         )

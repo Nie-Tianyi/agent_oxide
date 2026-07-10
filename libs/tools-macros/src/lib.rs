@@ -101,8 +101,8 @@ fn set_or_dup<T>(slot: &mut Option<T>, val: T, label: &str) -> syn::Result<()> {
 /// - `Tool::name()` returns `name`
 /// - `Tool::description()` returns `description`
 /// - `Tool::parameters()` lazily generates JSON Schema from `args` (cached via `OnceLock`)
-/// - `Tool::execute()` deserializes JSON into `args` and delegates to an inherent
-///   `fn execute(&self, args: ArgsType) -> Result<String, ToolError>` method
+/// - `Tool::execute_stream()` deserializes JSON into `args` and delegates to an inherent
+///   `fn execute_stream(&self, args: ArgsType) -> Result<ProgressStream, ToolError>` method
 ///
 /// # Example
 ///
@@ -122,8 +122,8 @@ fn set_or_dup<T>(slot: &mut Option<T>, val: T, label: &str) -> syn::Result<()> {
 /// pub struct EchoTool;
 ///
 /// impl EchoTool {
-///     fn execute(&self, args: EchoArgs) -> Result<String, ToolError> {
-///         Ok(args.text)
+///     fn execute_stream(&self, args: EchoArgs) -> Result<ProgressStream, ToolError> {
+///         Ok(Box::pin(futures_util::stream::once(async { Progress::Done(args.text) })))
 ///     }
 /// }
 /// ```
@@ -161,12 +161,15 @@ pub fn tool(attr: TokenStream, item: TokenStream) -> TokenStream {
                     .clone()
             }
 
-            fn execute(&self, raw_args: &str) -> ::std::result::Result<::std::string::String, ::tools::ToolError> {
+            fn execute_stream(
+                &self,
+                raw_args: &str,
+            ) -> ::std::result::Result<::tools::ProgressStream, ::tools::ToolError> {
                 let args: #args_type = ::serde_json::from_str(raw_args)
                     .map_err(|e| ::tools::ToolError::InvalidArgs(
                         format!("invalid args: {e}")
                     ))?;
-                #struct_name::execute(self, args)
+                #struct_name::execute_stream(self, args)
             }
         }
     };

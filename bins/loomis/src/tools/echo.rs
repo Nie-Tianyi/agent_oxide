@@ -9,13 +9,13 @@
 //! 如果你要写自己的工具，从复制这个文件开始，然后：
 //! 1. 定义 args struct（#[derive(JsonSchema, Deserialize)]）
 //! 2. 用 `#[tool(name = "...", description = "...", args = YourArgs)]` 标注 struct
-//! 3. 实现 `fn execute(&self, args: YourArgs) -> Result<String, ToolError>`
+//! 3. 实现 `fn execute_stream(&self, args: YourArgs) -> Result<ProgressStream, ToolError>`
 //! 4. 返回 `Ok(result_string)` 或 `Err(ToolError::...)`
 
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use tools::{ToolError, tool};
+use tools::{ProgressStream, ToolError, tool};
 
 /// Echo 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -44,7 +44,7 @@ pub(crate) struct EchoArgs {
 ///
 /// let tool = EchoTool;
 /// assert_eq!(tool.name(), "echo");
-/// let result = Tool::execute(&tool, r#"{"text": "hello"}"#).unwrap();
+/// let result = Tool::execute_stream(&tool, r#"{"text": "hello"}"#).unwrap().poll_done();
 /// assert_eq!(result, "hello");
 /// ```
 #[tool(
@@ -61,8 +61,9 @@ pub(crate) struct EchoArgs {
 pub struct EchoTool;
 
 impl EchoTool {
-    fn execute(&self, args: EchoArgs) -> Result<String, ToolError> {
-        Ok(args.text)
+    fn execute_stream(&self, args: EchoArgs) -> Result<ProgressStream, ToolError> {
+        let output = args.text;
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -93,32 +94,37 @@ mod tests {
 
     #[test]
     fn test_execute_returns_text() {
-        let result = Tool::execute(&EchoTool, r#"{"text": "hello world"}"#).unwrap();
+        let result = Tool::execute_stream(&EchoTool, r#"{"text": "hello world"}"#)
+            .unwrap()
+            .poll_done();
         assert_eq!(result, "hello world");
     }
 
     #[test]
     fn test_execute_empty_string() {
-        let result = Tool::execute(&EchoTool, r#"{"text": ""}"#).unwrap();
+        let result = Tool::execute_stream(&EchoTool, r#"{"text": ""}"#)
+            .unwrap()
+            .poll_done();
         assert_eq!(result, "");
     }
 
     #[test]
     fn test_execute_missing_field() {
-        let err = Tool::execute(&EchoTool, r#"{"wrong": "x"}"#).unwrap_err();
+        let err = Tool::execute_stream(&EchoTool, r#"{"wrong": "x"}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_execute_bad_json() {
-        let err = Tool::execute(&EchoTool, "garbage").unwrap_err();
+        let err = Tool::execute_stream(&EchoTool, "garbage").unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 
     #[test]
     fn test_execute_extra_field_rejected() {
         // deny_unknown_fields should reject extra fields
-        let err = Tool::execute(&EchoTool, r#"{"text": "hello", "extra": true}"#).unwrap_err();
+        let err =
+            Tool::execute_stream(&EchoTool, r#"{"text": "hello", "extra": true}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 

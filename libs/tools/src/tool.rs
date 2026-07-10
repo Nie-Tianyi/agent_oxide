@@ -13,6 +13,7 @@
 use serde_json::Value;
 
 use super::ToolError;
+use super::progress::ProgressStream;
 
 /// A tool that can be called by an LLM.
 ///
@@ -23,7 +24,15 @@ use super::ToolError;
 /// | [`name`](Tool::name) | Tool name, maps to `function.name` in API requests |
 /// | [`description`](Tool::description) | Human-readable description for the model |
 /// | [`parameters`](Tool::parameters) | JSON Schema for the tool's arguments |
-/// | [`execute`](Tool::execute) | Execute the tool, returns result string or error |
+/// | [`execute_stream`](Tool::execute_stream) | Execute and return a [`ProgressStream`] |
+///
+/// # Progress streaming
+///
+/// Every tool returns a [`ProgressStream`] — a boxed, `Send`-able
+/// [`Stream`](futures_core::Stream) of [`Progress`] events.  Short-lived
+/// tools (calculator, file ops) emit a single [`Progress::Done`] event.
+/// Long-running tools (shell) emit [`Progress::InProgress`] updates
+/// followed by [`Progress::Done`].
 pub trait Tool: Send + Sync {
     /// Tool name — used as `function.name` in API requests.
     fn name(&self) -> &str;
@@ -34,8 +43,10 @@ pub trait Tool: Send + Sync {
     /// JSON Schema describing the tool's expected arguments.
     fn parameters(&self) -> Value;
 
-    /// Execute the tool with JSON-encoded argument string.
-    fn execute(&self, args: &str) -> Result<String, ToolError>;
+    /// Execute the tool and return a stream of progress events.
+    ///
+    /// The final event in the stream **must** be [`Progress::Done`].
+    fn execute_stream(&self, args: &str) -> Result<ProgressStream, ToolError>;
 
     /// Convert to a [`provider::ToolDef`] for API requests.
     fn to_def(&self) -> provider::ToolDef {

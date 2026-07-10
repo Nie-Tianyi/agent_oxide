@@ -9,7 +9,7 @@ use std::sync::Arc;
 #[cfg(test)]
 use tools::SandboxConfig;
 use tools::WorkspaceFs;
-use tools::{FsError, ToolError, tool};
+use tools::{FsError, ProgressStream, ToolError, tool};
 
 /// Glob 工具的参数。
 #[derive(JsonSchema, Deserialize)]
@@ -57,14 +57,15 @@ impl GlobTool {
         Self { fs }
     }
 
-    fn execute(&self, args: GlobArgs) -> Result<String, ToolError> {
+    fn execute_stream(&self, args: GlobArgs) -> Result<ProgressStream, ToolError> {
         let files = self.fs.glob(&args.pattern).map_err(map_fs_err)?;
 
-        if files.is_empty() {
-            Ok("No files matched.".to_string())
+        let output = if files.is_empty() {
+            "No files matched.".to_string()
         } else {
-            Ok(files.join("\n"))
-        }
+            files.join("\n")
+        };
+        Ok(ProgressStream::done(output))
     }
 }
 
@@ -118,7 +119,9 @@ mod tests {
         write_file(&dir, "lib.rs", "");
         write_file(&dir, "Cargo.toml", "");
 
-        let result = Tool::execute(&tool, r#"{"pattern": "*.rs"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "*.rs"}"#)
+            .unwrap()
+            .poll_done();
         assert!(result.contains("lib.rs"));
         assert!(result.contains("main.rs"));
         assert!(!result.contains("Cargo.toml"));
@@ -131,7 +134,9 @@ mod tests {
         write_file(&dir, "src/deep/b.rs", "");
         write_file(&dir, "tests/c.rs", "");
 
-        let result = Tool::execute(&tool, r#"{"pattern": "**/*.rs"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "**/*.rs"}"#)
+            .unwrap()
+            .poll_done();
         let normalized = result.replace('\\', "/");
         assert!(normalized.contains("src/a.rs"));
         assert!(normalized.contains("src/deep/b.rs"));
@@ -141,14 +146,16 @@ mod tests {
     #[test]
     fn test_glob_no_match() {
         let (_dir, tool) = setup();
-        let result = Tool::execute(&tool, r#"{"pattern": "*.nonexistent"}"#).unwrap();
+        let result = Tool::execute_stream(&tool, r#"{"pattern": "*.nonexistent"}"#)
+            .unwrap()
+            .poll_done();
         assert_eq!(result, "No files matched.");
     }
 
     #[test]
     fn test_missing_pattern() {
         let (_dir, tool) = setup();
-        let err = Tool::execute(&tool, r#"{}"#).unwrap_err();
+        let err = Tool::execute_stream(&tool, r#"{}"#).unwrap_err();
         assert!(matches!(err, ToolError::InvalidArgs(_)));
     }
 }

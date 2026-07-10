@@ -34,5 +34,5 @@ mod hooks;
 
 pub use agent::{Agent, AgentError, AgentEvent};
 pub use builder::AgentBuilder;
-pub use context::{EngineContext, EngineContextBuilder};
+pub use context::{EngineContext, EngineContextBuilder, MacroCompactConfig};
 pub use hooks::AgentHook;

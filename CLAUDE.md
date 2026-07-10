@@ -19,7 +19,9 @@ Set `DEEPSEEK_API` in `.env` before running — `dotenvy` loads it at startup.
 
 ## Architecture
 
-This is a **Rust agent framework** (Rust 2024 edition, Tokio async). The project is organized as a Cargo workspace (`agent_oxide`) with six crates.
+This is a **Rust agent framework** (Rust 2024 edition, Tokio async). The project is organized as a Cargo workspace (`agent_oxide`).
+
+**Rust edition**: The codebase uses Rust 2024 which has **native async fn in traits** (RPITIT). Do NOT bring in the `async-trait` crate — use `async fn` directly in trait definitions. `Box<dyn Trait>` with async methods requires dyn-compatibility; prefer sync traits for dyn dispatch and keep async work in dedicated components (e.g. `MacroCompactConfig` with the Agent loop doing the async call).
 
 ### Workspace structure
 
@@ -30,7 +32,8 @@ agent_oxide/
 │   ├── provider/           # LLMClient trait + shared types (Message, ToolCall, ToolDef, etc.)
 │   ├── deepseek/           # DeepSeekClient — implements LLMClient with SSE streaming
 │   ├── tools/              # Tool trait, ToolRegistry, WorkspaceFs sandbox, generate_schema
-│   ├── memory/             # Memory (in-memory buffer), compaction, persistence
+│   ├── memory/             # Memory (in-memory buffer), persistence
+│   ├── hooks/              # Ready-to-use AgentHook impls (MicroCompactHook, etc.)
 │   └── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent stream
 ├── bins/
 │   └── loomis/             # Binary — concrete tools, hooks, TUI, assembly, main.rs
@@ -45,8 +48,9 @@ agent_oxide/
 | `provider` | `libs/` | Abstraction | `LLMClient` trait, `Message`, `Role`, `ToolCall`, `ToolDef`, `CompletionRequest`, `CompletionResponse`, `ProviderError`, `StreamChunk`, `Delta` |
 | `deepseek` | `libs/` | Concrete | `DeepSeekClient` (impl `LLMClient`), `DeepSeekStream` (SSE parser), `DeepSeekRequest`, `DeepSeekError` |
 | `tools` | `libs/` | Abstraction | `Tool` trait (sync, `Send+Sync`), `ToolRegistry`, `WorkspaceFs`, `SandboxConfig`, `ToolError`, `FsError`, `generate_schema` |
-| `memory` | `libs/` | Abstraction | `Memory` (in-memory buffer), `SharedMemory` (`Arc<RwLock<Memory>>`), `MemoryBuilder`, two-tier compaction (MicroCompact + LLM summarisation), `save_conversation`/`load_conversation`/`list_threads` |
-| `engine` | `libs/` | Abstraction | `Agent`, `AgentEvent` (Token, ToolCallStart, ToolResult, etc.), `AgentError`, `AgentHook` trait (on_run_start, before_tool_call, etc.), `EngineContext` (with compaction config), `maybe_compact()` |
+| `memory` | `libs/` | Abstraction | `Memory` (in-memory buffer, `pub messages: Vec<Message>`), `SharedMemory`, `save_conversation`/`load_conversation`/`list_threads` |
+| `hooks` | `libs/` | Concrete | `MicroCompactHook` (AgentHook — tool-output clearing), `MacroCompactConfig` constants (`DEFAULT_COMPACT_CHARS`, `DEFAULT_KEEP_LAST_N`, etc.) |
+| `engine` | `libs/` | Abstraction | `Agent`, `AgentEvent`, `AgentError`, `AgentHook` trait (sync — `on_run_start`, `on_llm_start` with `&SharedMemory`, `before_tool_call`, etc.), `EngineContext`, `MacroCompactConfig` (model + threshold + keep_last_n), `maybe_compact()` |
 | `loomis` | `bins/` | Binary + Lib | Concrete tools (CalculatorTool, ReadTool, ShellTool, ...), sandbox system (SandboxHook, ShellFilter, AuditLogger, ResourceTracker, EnvSanitizer), TUI (ratatui), `build_coding_agent()`, `main.rs` |
 
 ### Dependency graph
@@ -58,16 +62,18 @@ provider (no internal deps)
     ├── tools ─────────── (uses provider::ToolDef)
     ├── memory ────────── (uses provider::Message)
     ↑
-    └── engine ────────── (uses provider + tools + memory)
-            ↑
-        loomis (bin) ──── (uses all five libs)
+    ├── engine ────────── (uses provider + tools + memory)
+    │       ↑
+    ├── hooks ─────────── (uses provider + memory + engine)
+    │       ↑
+    └─────── loomis (bin) ──── (uses all libs)
 ```
 
 ### Key patterns
 
 - **`LLMClient` trait** — abstraction over LLM providers. Uses `#[async_trait]` for dyn-compatibility. `DeepSeekClient` in `libs/deepseek/` is the reference implementation.
 - **`Tool` trait** — sync, object-safe (no `async_trait`). CPU-bound tools run inline; I/O-heavy ones use `spawn_blocking` internally.
-- **Two-tier compaction** — (1) **MicroCompact**: `compact_tool_output()` / `to_compact_context_vec()` clears old tool outputs from high-volume tools (read, shell, grep, glob, edit, write, ls), replacing content with `[Old tool result content cleared]` while keeping the most recent `keep_recent` intact. Non-mutating variant used before each LLM API call so the model sees compacted context but persistence sees full content. (2) **LLM summarisation**: `drain_for_compact()` + `apply_compact()` + `maybe_compact()`. When the character budget is exceeded, old non-System messages are drained, summarised by an LLM, and the summary is inserted as a new System message. System messages are never drained. Both tiers are configured via `EngineContext`.
+- **Two-tier compaction** — (1) **MicroCompact** (`MicroCompactHook` in `hooks` crate): `AgentHook::on_llm_start()` clears old tool outputs from high-volume tools (read, shell, grep, glob, edit, write, ls) in-place, replacing content with `[Old tool result content cleared]`. (2) **Macro-compact** (`MacroCompactConfig` in `engine`): the Agent loop checks the character budget before each LLM call; when exceeded, drains old non-System messages and calls the compact model for LLM summarisation. Constants live in the `hooks` crate.
 - **`AgentHook` trait** — lifecycle callbacks (on_run_start, on_llm_start, on_llm_end, before_tool_call, after_tool_call). `before_tool_call` can return `Err` to block tool execution. Concrete hooks in `loomis` crate.
 - **`AgentEvent` stream** — real-time tokens, tool call starts/args/results via `mpsc::unbounded_channel`. The TUI consumes these for rendering.
 - **`WorkspaceFs` sandbox** — all file paths canonicalized and checked against `workspace_root`. Enforces file-size caps, extension blocklist, hidden-file protection, binary-content detection, and TOCTOU re-checks. Policy driven by [`SandboxConfig`](libs/tools/src/sandbox/config.rs) (loaded from `.loomis/config.toml`).

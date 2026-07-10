@@ -378,11 +378,9 @@ impl App {
             "/stats" => {
                 let mem = self.memory.read().unwrap();
                 let content = format!(
-                    "Messages: {}  |  Characters: {}  |  Threshold: {}  |  Keep last: {}",
+                    "Messages: {}  |  Characters: {}",
                     mem.message_count(),
                     mem.total_chars(),
-                    mem.compact_threshold(),
-                    mem.keep_last_n(),
                 );
                 self.messages.push(ChatMessage::System {
                     content,

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use deepseek::DeepSeekClient;
 use engine::{Agent, EngineContext};
+use hooks;
 use memory::{Memory, SharedMemory};
 use provider::{Message, Role};
 use tokio::sync::mpsc;
@@ -159,7 +160,7 @@ pub fn build_coding_agent(
     // ── Memory ───────────────────────────────────────────────
     let memory: SharedMemory = Arc::new(std::sync::RwLock::new(Memory::new()));
 
-    // ── LLM Client ───────────────────────────────────────────
+    // ── LLM Client ────────────────────────────────────────────
     let client = DeepSeekClient::new(api_key);
 
     // ── Sandbox components ────────────────────────────────────
@@ -168,11 +169,30 @@ pub fn build_coding_agent(
     let audit_logger = Arc::new(AuditLogger::new(sandbox_config, workspace_root));
 
     // ── Hooks ─────────────────────────────────────────────────
+    // SandboxHook — shell approval, resource tracking, audit logging
     let (approval_hook, approval_tx) =
         SandboxHook::new(shell_filter, resource_tracker, audit_logger);
     approval_hook.set_hook_tx(hook_tx.clone());
 
-    let hooks: Vec<Box<dyn engine::AgentHook>> = vec![Box::new(approval_hook)];
+    // MicroCompactHook — clears old tool output content (sync AgentHook)
+    let micro_compact = hooks::MicroCompactHook::new(
+        hooks::DEFAULT_KEEP_RECENT_TOOL_OUTPUTS,
+        hooks::DEFAULT_COMPACTABLE_TOOLS
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+    );
+
+    let hooks: Vec<Box<dyn engine::AgentHook>> =
+        vec![Box::new(micro_compact), Box::new(approval_hook)];
+
+    // Macro-compaction config — LLM summarisation when over budget.
+    // The agent loop handles the async LLM call directly.
+    let macro_compact = engine::MacroCompactConfig {
+        model: flash_model.to_string(),
+        threshold: hooks::DEFAULT_COMPACT_CHARS,
+        keep_last_n: hooks::DEFAULT_KEEP_LAST_N,
+    };
 
     // ── Engine context (via builder) ─────────────────────────
     let ctx = EngineContext::builder(client, memory.clone(), registry, model.to_string())
@@ -180,15 +200,7 @@ pub fn build_coding_agent(
         .max_steps(50)
         .max_retries(3)
         .streaming(true)
-        .compact_tool_outputs(true)
-        .keep_recent_tool_outputs(memory::DEFAULT_KEEP_RECENT_TOOL_OUTPUTS)
-        .compactable_tool_names(
-            memory::DEFAULT_COMPACTABLE_TOOLS
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-        )
-        .compact_model(flash_model.to_string())
+        .macro_compact(macro_compact)
         .build();
 
     let agent = Agent::new(ctx);

@@ -192,29 +192,23 @@ impl<C: LLMClient> Agent<C> {
             }
             steps += 1;
 
-            // Full LLM compaction when over budget (before fetching messages).
+            // Macro-compaction — async LLM summarisation.
             self.maybe_compact().await?;
+
+            // Micro-compaction — sync tool-output clearing.
+            for hook in &self.ctx.hooks {
+                hook.on_llm_start("default", &self.ctx.memory);
+            }
 
             let messages = {
                 let mem = self.ctx.memory.read().unwrap();
-                if self.ctx.compact_tool_outputs {
-                    mem.to_compact_context_vec(
-                        self.ctx.keep_recent_tool_outputs,
-                        &self.ctx.compactable_tool_names,
-                    )
-                } else {
-                    mem.to_context_vec()
-                }
+                mem.to_context_vec()
             };
 
             let tools = self.ctx.tools.to_tool_defs();
             let request = CompletionRequest::new(&self.ctx.model, messages)
                 .with_stream(true)
                 .with_tools(tools);
-
-            for hook in &self.ctx.hooks {
-                hook.on_llm_start("default");
-            }
 
             let mut stream =
                 stream_with_retry(&self.ctx.llm, request.clone(), self.ctx.max_retries).await?;
@@ -349,29 +343,23 @@ impl<C: LLMClient> Agent<C> {
             }
             steps += 1;
 
-            // Full LLM compaction when over budget (before fetching messages).
+            // Macro-compaction — async LLM summarisation.
             self.maybe_compact().await?;
+
+            // Micro-compaction — sync tool-output clearing.
+            for hook in &self.ctx.hooks {
+                hook.on_llm_start("default", &self.ctx.memory);
+            }
 
             let messages = {
                 let mem = self.ctx.memory.read().unwrap();
-                if self.ctx.compact_tool_outputs {
-                    mem.to_compact_context_vec(
-                        self.ctx.keep_recent_tool_outputs,
-                        &self.ctx.compactable_tool_names,
-                    )
-                } else {
-                    mem.to_context_vec()
-                }
+                mem.to_context_vec()
             };
 
             let tools = self.ctx.tools.to_tool_defs();
             let request = CompletionRequest::new(&self.ctx.model, messages)
                 .with_stream(false)
                 .with_tools(tools);
-
-            for hook in &self.ctx.hooks {
-                hook.on_llm_start("default");
-            }
 
             let response =
                 generate_with_retry(&self.ctx.llm, request, self.ctx.max_retries).await?;
@@ -495,33 +483,28 @@ impl<C: LLMClient> Agent<C> {
 // ── LLM Compaction ────────────────────────────────────────────────────────────
 
 impl<C: LLMClient> Agent<C> {
-    /// Check whether full LLM compaction is needed and run it if so.
+    /// Check whether macro-compaction is needed and run it if so.
     ///
-    /// Called at the start of each agent loop iteration.
-    /// When [`EngineContext::compact_model`] is `Some`, this checks
-    /// [`Memory::needs_compact`] and runs an LLM summarisation pass
-    /// (drain → summarise → apply) to bring the conversation back
-    /// under the character budget.
+    /// Called at the start of each agent loop iteration.  Uses
+    /// [`EngineContext::macro_compact`] for the model + budget config.
     async fn maybe_compact(&self) -> Result<(), AgentError> {
-        let compact_model = match &self.ctx.compact_model {
-            Some(m) => m.clone(),
+        let cfg = match &self.ctx.macro_compact {
+            Some(c) => c,
             None => return Ok(()),
         };
 
         let needs = {
             let mem = self.ctx.memory.read().unwrap();
-            mem.needs_compact()
+            mem.total_chars() > cfg.threshold
         };
-
         if !needs {
             return Ok(());
         }
 
         let old = {
             let mut mem = self.ctx.memory.write().unwrap();
-            mem.drain_for_compact()
+            drain_for_compact(&mut mem.messages, cfg.keep_last_n)
         };
-
         if old.is_empty() {
             return Ok(());
         }
@@ -538,11 +521,9 @@ impl<C: LLMClient> Agent<C> {
              Output only the summary, no preamble:\n\n{transcript}"
         );
 
-        let request =
-            CompletionRequest::new(&compact_model, vec![Message::new(Role::User, prompt)]);
+        let request = CompletionRequest::new(&cfg.model, vec![Message::new(Role::User, prompt)]);
 
         let response = self.ctx.llm.generate(request).await?;
-
         let summary = response
             .choices
             .first()
@@ -551,11 +532,35 @@ impl<C: LLMClient> Agent<C> {
 
         {
             let mut mem = self.ctx.memory.write().unwrap();
-            mem.apply_compact(summary);
+            if !summary.is_empty() {
+                mem.messages.insert(0, Message::new(Role::System, summary));
+            }
         }
 
         Ok(())
     }
+}
+
+fn drain_for_compact(messages: &mut Vec<Message>, keep_last_n: usize) -> Vec<Message> {
+    let non_system_count = messages.iter().filter(|m| m.role != Role::System).count();
+    let keep = std::cmp::min(keep_last_n, non_system_count);
+    let to_drain = non_system_count.saturating_sub(keep);
+    if to_drain == 0 {
+        return Vec::new();
+    }
+    let mut drained = Vec::with_capacity(to_drain);
+    let mut kept = Vec::with_capacity(messages.len() - to_drain);
+    let mut drained_so_far = 0;
+    for msg in messages.drain(..) {
+        if msg.role != Role::System && drained_so_far < to_drain {
+            drained.push(msg);
+            drained_so_far += 1;
+        } else {
+            kept.push(msg);
+        }
+    }
+    *messages = kept;
+    drained
 }
 
 const fn role_label(role: Role) -> &'static str {

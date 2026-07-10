@@ -1,0 +1,12 @@
+[package]
+name = "hooks"
+version = "0.1.0"
+edition = "2024"
+description = "Common hooks for the Agent Oxide framework — compaction, approval, etc."
+
+[dependencies]
+provider = { path = "../provider" }
+memory = { path = "../memory" }
+engine = { path = "../engine" }
+tokio = { workspace = true }
+serde_json = { workspace = true }

@@ -36,8 +36,6 @@ pub struct ThreadInfo {
 struct ConversationFile {
     version: u32,
     saved_at: String,
-    compact_threshold: usize,
-    keep_last_n: usize,
     messages: Vec<Message>,
 }
 
@@ -50,8 +48,6 @@ pub fn save_conversation(name: &str, workspace_root: &Path, memory: &Memory) -> 
     let cf = ConversationFile {
         version: CURRENT_VERSION,
         saved_at: iso_now(),
-        compact_threshold: memory.compact_threshold(),
-        keep_last_n: memory.keep_last_n(),
         messages: memory.to_context_vec(),
     };
 
@@ -73,11 +69,7 @@ pub fn load_conversation(name: &str, workspace_root: &Path) -> io::Result<Memory
     let cf: ConversationFile =
         serde_json::from_str(&json).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    Ok(Memory::builder()
-        .threshold(cf.compact_threshold)
-        .keep_last(cf.keep_last_n)
-        .with_messages(cf.messages)
-        .build())
+    Ok(Memory::from(cf.messages))
 }
 
 pub fn list_threads(workspace_root: &Path) -> io::Result<Vec<ThreadInfo>> {
@@ -236,12 +228,7 @@ fn format_conversation_md(cf: &ConversationFile) -> String {
     md.push_str(&format!("- **Messages**: {}\n", cf.messages.len()));
     let total_chars: usize = cf.messages.iter().map(|m| m.content.len()).sum();
     md.push_str(&format!("- **Total chars**: {total_chars}\n"));
-    md.push_str(&format!(
-        "- **Compact threshold**: {}\n",
-        cf.compact_threshold
-    ));
-    md.push_str(&format!("- **Keep last N**: {}\n\n", cf.keep_last_n));
-    md.push_str("---\n\n");
+    md.push_str("\n---\n\n");
 
     for msg in &cf.messages {
         let role_str = match msg.role {
@@ -288,22 +275,16 @@ mod tests {
     fn test_round_trip_save_and_load() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        let mem = Memory::builder()
-            .threshold(500_000)
-            .keep_last(8)
-            .with_messages(vec![
-                Message::new(Role::System, "You are helpful."),
-                Message::new(Role::User, "Hello"),
-                Message::new(Role::Assistant, "Hi there!"),
-            ])
-            .build();
+        let mem = Memory::from(vec![
+            Message::new(Role::System, "You are helpful."),
+            Message::new(Role::User, "Hello"),
+            Message::new(Role::Assistant, "Hi there!"),
+        ]);
 
         save_conversation("test-thread", root, &mem).unwrap();
         assert!(root.join(".loomis/threads/test-thread.json").exists());
 
         let loaded = load_conversation("test-thread", root).unwrap();
-        assert_eq!(loaded.compact_threshold(), 500_000);
-        assert_eq!(loaded.keep_last_n(), 8);
         assert_eq!(loaded.message_count(), 3);
         let msgs = loaded.to_context_vec();
         assert_eq!(msgs[0].role, Role::System);

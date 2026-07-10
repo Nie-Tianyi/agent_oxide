@@ -1,11 +1,25 @@
-use std::collections::HashSet;
 use std::sync::Arc;
 
-use memory::{DEFAULT_COMPACTABLE_TOOLS, DEFAULT_KEEP_RECENT_TOOL_OUTPUTS, SharedMemory};
+use memory::SharedMemory;
 use provider::LLMClient;
 use tools::ToolRegistry;
 
 use crate::hooks::AgentHook;
+
+/// Configuration for macro-compaction (full LLM summarisation).
+///
+/// When `Some`, the agent checks whether the conversation exceeds
+/// `threshold` characters before each LLM call and, if so, drains
+/// old non-System messages and summarises them via the given `model`.
+#[derive(Debug, Clone)]
+pub struct MacroCompactConfig {
+    /// Model name for summarisation (cheap / fast model).
+    pub model: String,
+    /// Character budget that triggers summarisation.
+    pub threshold: usize,
+    /// Number of non-System messages preserved during drain.
+    pub keep_last_n: usize,
+}
 
 /// Configuration and dependencies for an [`Agent`](crate::Agent).
 ///
@@ -19,7 +33,8 @@ pub struct EngineContext<C: LLMClient> {
     pub memory: SharedMemory,
     /// Tool registry (shared ownership).
     pub tools: Arc<ToolRegistry>,
-    /// Lifecycle hooks (optional).
+    /// Lifecycle hooks (optional).  Compaction, sandbox approval, and
+    /// other policies are provided by hooks in the `hooks` crate.
     pub hooks: Vec<Box<dyn AgentHook>>,
     /// Model name to send in API requests.
     pub model: String,
@@ -29,22 +44,12 @@ pub struct EngineContext<C: LLMClient> {
     pub max_retries: usize,
     /// Whether to use SSE streaming.
     pub streaming: bool,
-    // ── Tool output compaction (MicroCompact) ──────────────────────────
-    /// Whether to compact old tool outputs before sending context to the LLM.
-    /// When true, [`Memory::to_compact_context_vec`] is used instead of
-    /// [`Memory::to_context_vec`].
-    pub compact_tool_outputs: bool,
-    /// Number of recent tool outputs to preserve when compacting.
-    pub keep_recent_tool_outputs: usize,
-    /// Tool names eligible for output compaction.
-    pub compactable_tool_names: HashSet<String>,
-    // ── Full LLM compaction ────────────────────────────────────────────
-    /// Model to use for full-memory summarisation compaction.
-    /// When `Some`, the agent checks for [`memory::CompactSignal::NeedsCompact`]
-    /// after each turn and triggers an LLM summarisation pass.  Use a cheap /
-    /// fast model here (e.g. `"deepseek-v4-flash"`).
-    /// When `None`, only tool-output (micro) compaction runs.
-    pub compact_model: Option<String>,
+    /// Macro-compaction configuration.  When `Some`, the agent runs
+    /// LLM summarisation when the character budget is exceeded.
+    /// Micro-compaction (tool-output clearing) is handled by
+    /// [`MicroCompactHook`](hooks::MicroCompactHook) registered as an
+    /// [`AgentHook`](crate::AgentHook).
+    pub macro_compact: Option<MacroCompactConfig>,
 }
 
 impl<C: LLMClient> EngineContext<C> {
@@ -59,10 +64,6 @@ impl<C: LLMClient> EngineContext<C> {
     /// | `max_steps` | `50` |
     /// | `max_retries` | `3` |
     /// | `streaming` | `true` |
-    /// | `compact_tool_outputs` | `false` |
-    /// | `keep_recent_tool_outputs` | `5` |
-    /// | `compactable_tool_names` | empty |
-    /// | `compact_model` | `None` |
     ///
     /// # Example
     ///
@@ -70,8 +71,6 @@ impl<C: LLMClient> EngineContext<C> {
     /// let ctx = EngineContext::builder(client, memory, registry, "deepseek-v4")
     ///     .hook(my_hook)
     ///     .max_steps(100)
-    ///     .with_micro_compact(5, my_compactable_tools)
-    ///     .with_macro_compact("deepseek-v4-flash")
     ///     .build();
     /// let agent = Agent::new(ctx);
     /// ```
@@ -90,24 +89,8 @@ impl<C: LLMClient> EngineContext<C> {
             max_steps: 50,
             max_retries: 3,
             streaming: true,
-            compact_tool_outputs: false,
-            keep_recent_tool_outputs: 5,
-            compactable_tool_names: HashSet::new(),
-            compact_model: None,
+            macro_compact: None,
         }
-    }
-
-    /// Populate the tool-output compaction fields with sensible defaults.
-    ///
-    /// Call this (or set the fields manually) before constructing an
-    /// [`Agent`](crate::Agent) if you have `compact_tool_outputs: true`.
-    pub fn with_compact_defaults(mut self) -> Self {
-        self.keep_recent_tool_outputs = DEFAULT_KEEP_RECENT_TOOL_OUTPUTS;
-        self.compactable_tool_names = DEFAULT_COMPACTABLE_TOOLS
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        self
     }
 }
 
@@ -131,10 +114,7 @@ pub struct EngineContextBuilder<C: LLMClient> {
     pub(crate) max_steps: usize,
     pub(crate) max_retries: usize,
     pub(crate) streaming: bool,
-    pub(crate) compact_tool_outputs: bool,
-    pub(crate) keep_recent_tool_outputs: usize,
-    pub(crate) compactable_tool_names: HashSet<String>,
-    pub(crate) compact_model: Option<String>,
+    pub(crate) macro_compact: Option<MacroCompactConfig>,
 }
 
 impl<C: LLMClient> EngineContextBuilder<C> {
@@ -181,64 +161,12 @@ impl<C: LLMClient> EngineContextBuilder<C> {
         self
     }
 
-    /// Enable or disable tool-output compaction (default: `false`).
+    /// Enable macro-compaction (full LLM summarisation).
     ///
-    /// When enabled, use [`keep_recent_tool_outputs`](Self::keep_recent_tool_outputs)
-    /// and [`compactable_tool_names`](Self::compactable_tool_names) to
-    /// configure which tools and how many recent outputs to preserve.
-    pub fn compact_tool_outputs(mut self, enabled: bool) -> Self {
-        self.compact_tool_outputs = enabled;
-        self
-    }
-
-    /// Number of recent tool outputs to preserve per tool when
-    /// [`compact_tool_outputs`](Self::compact_tool_outputs) is enabled
-    /// (default: `5`).
-    pub fn keep_recent_tool_outputs(mut self, n: usize) -> Self {
-        self.keep_recent_tool_outputs = n;
-        self
-    }
-
-    /// Set of tool names eligible for output compaction (default: empty).
-    pub fn compactable_tool_names(mut self, names: HashSet<String>) -> Self {
-        self.compactable_tool_names = names;
-        self
-    }
-
-    /// Set the model for macro-compaction.
-    ///
-    /// When `Some`, full LLM summarisation is enabled.  Use a cheap /
-    /// fast model (e.g. `"deepseek-v4-flash"`).  When `None`, only
-    /// micro-compaction runs.
-    pub fn compact_model(mut self, model: impl Into<String>) -> Self {
-        self.compact_model = Some(model.into());
-        self
-    }
-
-    /// Enable **micro-compaction** of tool outputs (shorthand).
-    ///
-    /// Equivalent to calling:
-    /// ```ignore
-    /// .compact_tool_outputs(true)
-    /// .keep_recent_tool_outputs(keep_recent)
-    /// .compactable_tool_names(compactable_tools)
-    /// ```
-    pub fn with_micro_compact(
-        mut self,
-        keep_recent: usize,
-        compactable_tools: HashSet<String>,
-    ) -> Self {
-        self.compact_tool_outputs = true;
-        self.keep_recent_tool_outputs = keep_recent;
-        self.compactable_tool_names = compactable_tools;
-        self
-    }
-
-    /// Enable **macro-compaction** (full LLM summarisation) — shorthand.
-    ///
-    /// Equivalent to calling `.compact_model(model)`.
-    pub fn with_macro_compact(mut self, model: impl Into<String>) -> Self {
-        self.compact_model = Some(model.into());
+    /// When set, the agent checks the character budget before each
+    /// LLM call and summarises old messages via the given model.
+    pub fn macro_compact(mut self, config: MacroCompactConfig) -> Self {
+        self.macro_compact = Some(config);
         self
     }
 
@@ -253,10 +181,7 @@ impl<C: LLMClient> EngineContextBuilder<C> {
             max_steps: self.max_steps,
             max_retries: self.max_retries,
             streaming: self.streaming,
-            compact_tool_outputs: self.compact_tool_outputs,
-            keep_recent_tool_outputs: self.keep_recent_tool_outputs,
-            compactable_tool_names: self.compactable_tool_names,
-            compact_model: self.compact_model,
+            macro_compact: self.macro_compact,
         }
     }
 }

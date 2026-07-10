@@ -1,7 +1,8 @@
 //! Builder for [`Agent`] — the primary entry point for most users.
 //!
 //! [`AgentBuilder`] provides a fluent API for assembling an [`Agent`] with
-//! its LLM client, model, tools, memory, hooks, and compaction settings.
+//! its LLM client, model, tools, memory, and hooks.  Compaction and other
+//! policy concerns are handled by hooks (see the `hooks` crate).
 //!
 //! # Quick start
 //!
@@ -16,22 +17,22 @@
 //! let answer = agent.run("What is 2+2?").await?;
 //! ```
 //!
-//! # Advanced usage
+//! # Advanced usage (with compaction hooks)
 //!
 //! ```ignore
+//! // Compaction is provided by hooks from the `hooks` crate:
 //! let agent = Agent::builder(client, "deepseek-v4")
 //!     .memory(my_shared_memory)
 //!     .tool(read_tool)
 //!     .tool(shell_tool)
 //!     .hook(sandbox_hook)
+//!     .hook(micro_compact_hook)
+//!     .hook(macro_compact_hook)
 //!     .system_prompt("You are a coding assistant.")
 //!     .max_steps(100)
-//!     .with_micro_compact(5, compactable_tools)
-//!     .with_macro_compact("deepseek-v4-flash")
 //!     .build();
 //! ```
 
-use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 
 use memory::{Memory, SharedMemory};
@@ -60,8 +61,6 @@ use crate::hooks::AgentHook;
 /// | [`max_steps`](Self::max_steps) | `50` |
 /// | [`max_retries`](Self::max_retries) | `3` |
 /// | [`streaming`](Self::streaming) | `true` |
-/// | Micro-compaction | Off — call [`with_micro_compact`](Self::with_micro_compact) |
-/// | Macro-compaction | Off — call [`with_macro_compact`](Self::with_macro_compact) |
 pub struct AgentBuilder<C: LLMClient> {
     llm: C,
     model: String,
@@ -72,10 +71,6 @@ pub struct AgentBuilder<C: LLMClient> {
     max_steps: usize,
     max_retries: usize,
     streaming: bool,
-    compact_tool_outputs: bool,
-    keep_recent_tool_outputs: usize,
-    compactable_tool_names: HashSet<String>,
-    compact_model: Option<String>,
 }
 
 impl<C: LLMClient> AgentBuilder<C> {
@@ -91,10 +86,6 @@ impl<C: LLMClient> AgentBuilder<C> {
             max_steps: 50,
             max_retries: 3,
             streaming: true,
-            compact_tool_outputs: false,
-            keep_recent_tool_outputs: 5,
-            compactable_tool_names: HashSet::new(),
-            compact_model: None,
         }
     }
 
@@ -211,43 +202,6 @@ impl<C: LLMClient> AgentBuilder<C> {
         self
     }
 
-    /// Enable **micro-compaction** of tool outputs.
-    ///
-    /// Old tool results for the named tools are replaced with the
-    /// placeholder `"[Old tool result content cleared]"`, keeping only
-    /// the most recent `keep_recent` results intact.  This reduces token
-    /// usage without losing the tool-call / tool-result pairing structure.
-    ///
-    /// # Parameters
-    ///
-    /// * `keep_recent` — how many of the most recent outputs to preserve
-    ///   per compactable tool name.
-    /// * `compactable_tools` — which tool names are eligible for
-    ///   compaction (e.g. `"read"`, `"shell"`, `"grep"`).
-    pub fn with_micro_compact(
-        mut self,
-        keep_recent: usize,
-        compactable_tools: HashSet<String>,
-    ) -> Self {
-        self.compact_tool_outputs = true;
-        self.keep_recent_tool_outputs = keep_recent;
-        self.compactable_tool_names = compactable_tools;
-        self
-    }
-
-    /// Enable **macro-compaction** (full LLM summarisation).
-    ///
-    /// When the conversation exceeds the memory character budget the
-    /// agent drains old non-System messages and asks the given `model`
-    /// to produce a summary, which is inserted as a new System message.
-    ///
-    /// Use a cheap / fast model here (e.g. `"deepseek-v4-flash"`) —
-    /// the summarisation runs inline and blocks the agent loop.
-    pub fn with_macro_compact(mut self, model: impl Into<String>) -> Self {
-        self.compact_model = Some(model.into());
-        self
-    }
-
     /// Consume the builder and produce a fully-wired [`Agent`].
     ///
     /// # What this does
@@ -282,23 +236,15 @@ impl<C: LLMClient> AgentBuilder<C> {
         let tools = Arc::new(registry);
 
         // Step 4: delegate to EngineContextBuilder
-        let mut ctx_builder = EngineContext::builder(self.llm, memory, tools, self.model)
+        let ctx = EngineContext::builder(self.llm, memory, tools, self.model)
             .hooks(self.hooks)
             .max_steps(self.max_steps)
             .max_retries(self.max_retries)
-            .streaming(self.streaming);
-
-        if self.compact_tool_outputs || !self.compactable_tool_names.is_empty() {
-            ctx_builder = ctx_builder
-                .with_micro_compact(self.keep_recent_tool_outputs, self.compactable_tool_names);
-        }
-
-        if let Some(model) = self.compact_model {
-            ctx_builder = ctx_builder.with_macro_compact(model);
-        }
+            .streaming(self.streaming)
+            .build();
 
         // Step 5: wrap in Agent
-        Agent::new(ctx_builder.build())
+        Agent::new(ctx)
     }
 }
 
@@ -387,8 +333,6 @@ mod tests {
         let agent = Agent::builder(MockClient, "m")
             .tool(MockTool::new("mock_tool"))
             .build();
-        // Building succeeds.  No public registry accessor on Agent, so
-        // we just verify construction doesn't panic.
         let _ = agent;
     }
 
@@ -409,9 +353,7 @@ mod tests {
 
         let agent = Agent::builder(MockClient, "m").memory(mem.clone()).build();
 
-        // Same Arc, same memory.
-        assert!(std::ptr::eq(Arc::as_ptr(agent.memory()), Arc::as_ptr(&mem),));
-        // Pre-seeded message is still there.
+        assert!(std::ptr::eq(Arc::as_ptr(agent.memory()), Arc::as_ptr(&mem)));
         assert_eq!(agent.memory().read().unwrap().message_count(), 1);
     }
 
@@ -429,37 +371,17 @@ mod tests {
 
         let messages = agent.memory().read().unwrap();
         assert_eq!(messages.message_count(), 2);
-        // System prompt is pushed after the existing message (at the end).
         assert_eq!(messages.messages()[0].role, Role::User);
         assert_eq!(messages.messages()[1].role, Role::System);
     }
 
     #[test]
-    fn compaction_disabled_by_default() {
-        // Compaction fields are not pub on AgentBuilder, so we inspect
-        // the built Agent.  Since there are no getters for compaction
-        // settings, we verify the build does not panic and trust the
-        // default-off contract.
-        let agent = Agent::builder(MockClient, "test-model").build();
-        assert_eq!(agent.model(), "test-model"); // sanity check
-    }
+    fn hooks_are_accepted() {
+        // Minimal hook — just verify the builder accepts it.
+        struct NoopHook;
+        impl AgentHook for NoopHook {}
 
-    #[test]
-    fn micro_compact_enables_compaction() {
-        let names: HashSet<String> = ["read", "shell"].iter().map(|s| (*s).to_string()).collect();
-        let agent = Agent::builder(MockClient, "m")
-            .with_micro_compact(3, names)
-            .build();
-        // Build succeeds — compaction is configured internally.
-        let _ = agent;
-    }
-
-    #[test]
-    fn macro_compact_sets_model() {
-        let agent = Agent::builder(MockClient, "m")
-            .with_macro_compact("deepseek-v4-flash")
-            .build();
-        // Build succeeds — compaction model is configured internally.
-        let _ = agent;
+        let agent = Agent::builder(MockClient, "m").hook(NoopHook).build();
+        assert_eq!(agent.model(), "m");
     }
 }

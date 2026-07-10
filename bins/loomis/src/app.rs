@@ -70,34 +70,11 @@ principles, etc. When necessary, educate your users—do not assume they have an
 background of the field.
 ";
 
-// ── AgentEvent (re-exported from engine) ──────────────────────────────────────
+// ── AgentEvent & InterveneResponse (re-exported from engine) ─────────────────
 
 /// Re-export the engine's event type for channel construction.
 pub use engine::AgentEvent;
-
-// ── HookEvent ─────────────────────────────────────────────────────────────────
-
-/// Events produced by loomis-side components (SandboxHook, agent_handler)
-/// that are **not** part of the engine's generic [`AgentEvent`] enum.
-///
-/// These are shell-specific events: running a user `!command`, its output,
-/// and approval prompts for dangerous shell operations.
-///
-/// Sent over a separate `mpsc::unbounded_channel` — the TUI event loop
-/// polls both the agent channel and the hook channel every frame.
-#[derive(Debug, Clone)]
-pub enum HookEvent {
-    /// The user's `!command` shell invocation has started executing.
-    ShellRunning { command: String },
-    /// A user `!command` has completed with its captured stdout/stderr.
-    ShellOutput { command: String, output: String },
-    /// The [`SandboxHook`] is requesting user approval before executing a
-    /// shell command on the agent's behalf.
-    ShellApprovalRequested {
-        tool_call_id: String,
-        command: String,
-    },
-}
+pub use engine::InterveneResponse;
 
 /// Product of [`build_coding_agent`] — everything needed to launch the TUI.
 pub struct AgentKit {
@@ -109,13 +86,9 @@ pub struct AgentKit {
     pub agent_rx: mpsc::UnboundedReceiver<AgentEvent>,
     /// Clone of the sending half — for the agent handler background task.
     pub agent_tx: mpsc::UnboundedSender<AgentEvent>,
-    /// Receiving half of the hook-event channel — for shell events.
-    pub hook_rx: mpsc::UnboundedReceiver<HookEvent>,
-    /// Clone of the sending half — for [`SandboxHook`] and agent_handler shell commands.
-    pub hook_tx: mpsc::UnboundedSender<HookEvent>,
-    /// The sender that unblocks the approval hook when the user
-    /// answers a shell confirmation prompt.
-    pub approval_tx: std::sync::mpsc::SyncSender<bool>,
+    /// The sender that unblocks the intervention hook when the user
+    /// answers an intervention prompt.
+    pub intervene_tx: std::sync::mpsc::SyncSender<InterveneResponse>,
 }
 
 /// Build a fully-wired coding agent with all channels and hooks.
@@ -128,7 +101,6 @@ pub fn build_coding_agent(
 ) -> AgentKit {
     // ── Channels ──────────────────────────────────────────────
     let (agent_tx, agent_rx) = mpsc::unbounded_channel::<AgentEvent>();
-    let (hook_tx, hook_rx) = mpsc::unbounded_channel::<HookEvent>();
 
     // ── Workspace filesystem ─────────────────────────────────
     let workspace = tools::WorkspaceFs::new(workspace_root, sandbox_config).unwrap_or_else(|e| {
@@ -171,9 +143,9 @@ pub fn build_coding_agent(
 
     // ── Hooks ─────────────────────────────────────────────────
     // SandboxHook — shell approval, resource tracking, audit logging
-    let (approval_hook, approval_tx) =
+    let (approval_hook, intervene_tx) =
         SandboxHook::new(shell_filter, resource_tracker, audit_logger);
-    approval_hook.set_hook_tx(hook_tx.clone());
+    approval_hook.set_agent_tx(agent_tx.clone());
 
     // MicroCompactHook — clears old tool output content
     let micro_compact = hooks::MicroCompactHook::new(
@@ -222,8 +194,6 @@ pub fn build_coding_agent(
         model: model.to_string(),
         agent_rx,
         agent_tx,
-        hook_rx,
-        hook_tx,
-        approval_tx,
+        intervene_tx,
     }
 }

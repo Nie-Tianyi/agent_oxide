@@ -6,4 +6,4 @@ pub mod sandbox;
 pub mod tools;
 pub mod tui;
 
-pub use app::{AgentEvent, AgentKit, HookEvent, build_coding_agent};
+pub use app::{AgentEvent, AgentKit, InterveneResponse, build_coding_agent};

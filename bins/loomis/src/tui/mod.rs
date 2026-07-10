@@ -39,4 +39,4 @@ mod ui;
 
 pub use app::App;
 pub use event::run;
-pub use messages::{ChatMessage, ShellOutputState, ThreadPicker, ToolCallState, TuiCommand};
+pub use messages::{ChatMessage, ThreadPicker, ToolCallState, TuiCommand};

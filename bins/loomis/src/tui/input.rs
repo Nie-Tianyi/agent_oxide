@@ -24,6 +24,11 @@ impl App {
             return self.handle_thread_picker_key(key);
         }
 
+        // ── Intervention prompt intercepts most keys ────────────
+        if self.has_pending_intervene() {
+            return self.handle_intervene_key(key);
+        }
+
         match key.code {
             // ── Submit / Newline ───────────────────────────────
             KeyCode::Enter => {
@@ -277,13 +282,10 @@ impl App {
 
             // ── Character insertion ────────────────────────────
             KeyCode::Char(c) => {
-                // If there's a pending shell confirmation, intercept Y/n
-                if self.has_pending_shell_confirm() {
-                    return match c {
-                        'Y' | 'y' => self.handle_shell_confirmation(true),
-                        'n' | 'N' => self.handle_shell_confirmation(false),
-                        _ => None, // ignore other chars while waiting
-                    };
+                // If there's a pending intervention prompt, route to
+                // the intervention key handler.
+                if self.has_pending_intervene() {
+                    return self.handle_intervene_key(key);
                 }
 
                 if self.streaming {
@@ -630,16 +632,16 @@ impl App {
     }
 }
 
-// ── Shell Confirmation Helpers ────────────────────────────────────────────────────
+// ── Intervention Helpers ──────────────────────────────────────────────────────────
 
 impl App {
-    /// Returns `true` if there is an unresponded [`ChatMessage::ShellConfirm`]
+    /// Returns `true` if there is an unresponded [`ChatMessage::Intervene`]
     /// in the message list.
-    fn has_pending_shell_confirm(&self) -> bool {
+    fn has_pending_intervene(&self) -> bool {
         self.messages.iter().rev().any(|msg| {
             matches!(
                 msg,
-                ChatMessage::ShellConfirm {
+                ChatMessage::Intervene {
                     responded: false,
                     ..
                 }
@@ -647,25 +649,167 @@ impl App {
         })
     }
 
-    /// Marks the last unresponded [`ChatMessage::ShellConfirm`] as
-    /// responded and returns a [`TuiCommand::ShellConfirmation`] with
-    /// the user's answer.
-    ///
-    /// Returns `None` if no unresponded confirmation is found (e.g.
-    /// because the user pressed Y/n when nothing was pending).
-    fn handle_shell_confirmation(&mut self, approved: bool) -> Option<TuiCommand> {
+    /// Routes all key presses while an intervention prompt is active.
+    fn handle_intervene_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        // Lazy-init the selection to the first option.
+        let (options_len, _responded) = self.intervene_state();
+        if self.intervene_selection.is_none() || self.intervene_selection.unwrap() >= options_len {
+            self.intervene_selection = Some(0);
+        }
+
+        match key.code {
+            KeyCode::Up => {
+                if let Some(sel) = self.intervene_selection.as_mut() {
+                    *sel = sel.saturating_sub(1);
+                }
+                None
+            }
+            KeyCode::Down => {
+                if let Some(sel) = self.intervene_selection.as_mut() {
+                    *sel = (*sel + 1).min(options_len.saturating_sub(1));
+                }
+                None
+            }
+            KeyCode::Enter => {
+                let sel = self.intervene_selection.unwrap_or(0);
+                let options: Vec<String> = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|msg| match msg {
+                        ChatMessage::Intervene {
+                            responded: false,
+                            options,
+                            ..
+                        } => Some(options.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+
+                let chosen_label = options.get(sel).cloned().unwrap_or_default();
+
+                // If the chosen option ends with "…", enter text-input mode.
+                // For now, handle as approve with the label text.
+                // Future: implement proper text-input dialog.
+                let custom_text = if chosen_label.ends_with('…') {
+                    // Use the existing input buffer as the custom text source.
+                    // The user can type their response in the input area.
+                    let text = self.input.clone();
+                    self.input.clear();
+                    self.input_cursor = 0;
+                    Some(text)
+                } else {
+                    None
+                };
+
+                self.complete_intervene(Some(sel), custom_text)
+            }
+            KeyCode::Esc => {
+                // Cancel — same as deny.
+                self.complete_intervene(None, None)
+            }
+            KeyCode::Char(c) => {
+                // If the selected option ends with "…", pass chars
+                // through to the input buffer for custom text entry.
+                let is_other = self.is_intervene_other_option_selected();
+                if is_other {
+                    self.input.insert(self.input_cursor, c);
+                    self.input_cursor += c.len_utf8();
+                    None
+                } else {
+                    // Quick-select by first character of each option.
+                    let c_lower = c.to_ascii_lowercase();
+                    let options: Vec<String> = self
+                        .messages
+                        .iter()
+                        .rev()
+                        .find_map(|msg| match msg {
+                            ChatMessage::Intervene {
+                                responded: false,
+                                options,
+                                ..
+                            } => Some(options.clone()),
+                            _ => None,
+                        })
+                        .unwrap_or_default();
+                    for (i, opt) in options.iter().enumerate() {
+                        if opt.to_ascii_lowercase().starts_with(c_lower) {
+                            self.intervene_selection = Some(i);
+                            // Auto-confirm on quick-select (pressing first char).
+                            let custom = if opt.ends_with('…') {
+                                Some(String::new())
+                            } else {
+                                None
+                            };
+                            return self.complete_intervene(Some(i), custom);
+                        }
+                    }
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Returns `true` if the currently highlighted option ends with `…`.
+    fn is_intervene_other_option_selected(&self) -> bool {
+        let sel = self.intervene_selection.unwrap_or(0);
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|msg| match msg {
+                ChatMessage::Intervene {
+                    responded: false,
+                    options,
+                    ..
+                } => options.get(sel).map(|o| o.ends_with('…')),
+                _ => None,
+            })
+            .unwrap_or(false)
+    }
+
+    /// Returns `(options_len, has_been_responded)` for the pending intervention.
+    fn intervene_state(&self) -> (usize, bool) {
+        self.messages
+            .iter()
+            .rev()
+            .find_map(|msg| match msg {
+                ChatMessage::Intervene {
+                    options, responded, ..
+                } => Some((options.len(), *responded)),
+                _ => None,
+            })
+            .unwrap_or((0, true))
+    }
+
+    /// Marks the last unresponded intervention as completed and returns
+    /// the [`TuiCommand::InterveneResponse`].
+    fn complete_intervene(
+        &mut self,
+        chosen: Option<usize>,
+        custom_text: Option<String>,
+    ) -> Option<TuiCommand> {
+        self.intervene_selection = None;
+        let response = engine::InterveneResponse {
+            chosen,
+            custom_text,
+        };
         for msg in self.messages.iter_mut().rev() {
-            if let ChatMessage::ShellConfirm {
-                tool_call_id,
+            if let ChatMessage::Intervene {
+                request_id,
                 responded,
+                chosen,
+                custom_text,
                 ..
             } = msg
                 && !*responded
             {
                 *responded = true;
-                return Some(TuiCommand::ShellConfirmation {
-                    tool_call_id: tool_call_id.clone(),
-                    approved,
+                *chosen = response.chosen;
+                *custom_text = response.custom_text.clone();
+                return Some(TuiCommand::InterveneResponse {
+                    request_id: request_id.clone(),
+                    response,
                 });
             }
         }

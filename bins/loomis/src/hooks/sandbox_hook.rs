@@ -10,7 +10,7 @@
 //!   ├─ ShellFilter::classify
 //!   │   ├─ Blocked  → reject immediately (no prompt)
 //!   │   ├─ AutoApproved → allow (no prompt)
-//!   │   └─ RequiresApproval → TUI prompt (Y/n)
+//!   │   └─ RequiresApproval → TUI prompt (navigable options)
 //!   └─ AuditLogger records every decision
 //! ```
 //!
@@ -19,21 +19,20 @@
 
 use std::sync::{Arc, Mutex, OnceLock};
 
-use engine::{AgentError, AgentHook};
+use engine::{AgentError, AgentEvent, AgentHook, InterveneRequest, InterveneResponse};
 use provider::ToolCall;
 use tokio::sync::mpsc;
 
-use crate::app::HookEvent;
 use crate::sandbox::audit_logger::{AuditEntry, AuditLogger};
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::{CommandVerdict, ShellFilter};
 
 pub struct SandboxHook {
-    /// Sends shell-specific events to the TUI (approval prompts, etc.).
-    hook_tx: OnceLock<mpsc::UnboundedSender<HookEvent>>,
-    /// Blocking receive for the user's approval decision
+    /// Sends agent events to the TUI (intervention requests, etc.).
+    agent_tx: OnceLock<mpsc::UnboundedSender<AgentEvent>>,
+    /// Blocking receive for the user's intervention response
     /// (same rendez-vous pattern as the original hook).
-    approval_rx: Mutex<std::sync::mpsc::Receiver<bool>>,
+    intervene_rx: Mutex<std::sync::mpsc::Receiver<InterveneResponse>>,
     /// Compiled command policy.
     shell_filter: ShellFilter,
     /// Per-session quota tracker.
@@ -44,17 +43,17 @@ pub struct SandboxHook {
 
 impl SandboxHook {
     /// Creates the hook and returns the sender half through which the
-    /// agent handler signals the user's approval decision.
+    /// agent handler signals the user's intervention response.
     pub fn new(
         shell_filter: ShellFilter,
         resource_tracker: Arc<ResourceTracker>,
         audit_logger: Arc<AuditLogger>,
-    ) -> (Self, std::sync::mpsc::SyncSender<bool>) {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<bool>(0);
+    ) -> (Self, std::sync::mpsc::SyncSender<InterveneResponse>) {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<InterveneResponse>(0);
         (
             Self {
-                hook_tx: OnceLock::new(),
-                approval_rx: Mutex::new(rx),
+                agent_tx: OnceLock::new(),
+                intervene_rx: Mutex::new(rx),
                 shell_filter,
                 resource_tracker,
                 audit_logger,
@@ -63,33 +62,55 @@ impl SandboxHook {
         )
     }
 
-    /// Called by `build_coding_agent` after the hook-event channel
+    /// Called by `build_coding_agent` after the agent-event channel
     /// is created.
-    pub fn set_hook_tx(&self, tx: mpsc::UnboundedSender<HookEvent>) {
-        let _ = self.hook_tx.set(tx);
+    pub fn set_agent_tx(&self, tx: mpsc::UnboundedSender<AgentEvent>) {
+        let _ = self.agent_tx.set(tx);
     }
 
     /// Prompt the user and block until they respond.
-    fn request_user_approval(&self, tool_call: &ToolCall, command: &str) -> Result<(), AgentError> {
-        // Notify the TUI to render a confirmation prompt.
-        if let Some(tx) = self.hook_tx.get() {
-            let _ = tx.send(HookEvent::ShellApprovalRequested {
-                tool_call_id: tool_call.id.clone(),
-                command: command.to_string(),
-            });
+    fn request_user_approval(
+        &self,
+        _tool_call: &ToolCall,
+        command: &str,
+    ) -> Result<(), AgentError> {
+        let request_id = uuid_v4();
+
+        // Notify the TUI to render an interactive intervention prompt.
+        if let Some(tx) = self.agent_tx.get() {
+            let _ = tx.send(AgentEvent::NeedUserIntervene(InterveneRequest {
+                request_id: request_id.clone(),
+                title: "Approve shell command?".into(),
+                description: command.to_string(),
+                options: vec!["Approve".into(), "Deny".into(), "Other…".into()],
+            }));
         }
 
         // Block until the TUI responds.
-        let approved = self.approval_rx.lock().unwrap().recv().unwrap_or(false);
+        let response = self.intervene_rx.lock().unwrap().recv().unwrap_or({
+            // Channel closed — treat as deny.
+            InterveneResponse {
+                chosen: Some(1), // "Deny"
+                custom_text: None,
+            }
+        });
 
-        if !approved {
-            return Err(AgentError::ToolRejected {
-                name: "shell".into(),
-                reason: "User denied shell command execution".into(),
-            });
+        match response.chosen {
+            Some(0) => Ok(()), // "Approve"
+            Some(2) => {
+                // "Other…" — user provided custom input; approve with
+                // the custom text (which can be logged / used later).
+                let _ = response.custom_text;
+                Ok(())
+            }
+            _ => {
+                // Deny, cancel, or unknown option.
+                Err(AgentError::ToolRejected {
+                    name: "shell".into(),
+                    reason: "User denied shell command execution".into(),
+                })
+            }
         }
-
-        Ok(())
     }
 
     /// Extract the command string from shell tool arguments.
@@ -258,6 +279,24 @@ fn chrono_now() -> String {
 
 fn is_leap(y: i64) -> bool {
     (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+/// Generate a simple UUID v4-like string for request identification.
+fn uuid_v4() -> String {
+    use std::time::SystemTime;
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    // Simple pseudo-UUID — sufficient for unique request ids within a session.
+    format!(
+        "{:08x}-{:04x}-4{:03x}-{:04x}-{:012x}",
+        (now >> 64) as u32,
+        (now >> 48) as u16,
+        (now >> 36) as u16 & 0x0fff,
+        (0x8000 | (now as u16 & 0x3fff)),
+        now as u64 & 0xffffffffffff,
+    )
 }
 
 #[cfg(test)]

@@ -10,9 +10,11 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use unicode_width::UnicodeWidthStr;
 
+use engine::CallOrigin;
+
 use super::app::App;
 use super::markdown::render_markdown;
-use super::messages::{ChatMessage, ShellOutputState, ThreadPicker, ToolCallState};
+use super::messages::{ChatMessage, ThreadPicker, ToolCallState};
 
 // ── Layout ───────────────────────────────────────────────────────────────────────
 
@@ -230,41 +232,69 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
             name,
             args,
             state,
+            origin,
             progress_line,
             timestamp,
             ..
         } => {
             let mut lines = Vec::new();
 
+            // User-origin commands render like the old ShellOutput with "$" prefix.
+            // LLM-origin tool calls render with ◌ / ✓ icons.
+            let is_user = matches!(origin, CallOrigin::User);
+
             match state {
                 ToolCallState::Running => {
-                    // Header line: timestamp + spinner + tool name
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{timestamp} "), ts_style),
-                        Span::styled(
-                            "◌ ",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            name.as_str(),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::raw(" "),
-                        Span::styled("(running…)", ts_style),
-                    ]));
-                    // Args line (if present)
-                    if !args.is_empty() {
+                    if is_user {
+                        // Header: "$ command" — green, like old ShellOutput.
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(
+                                "$ ",
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(args.as_str(), Style::default().fg(Color::Green)),
+                        ]));
                         lines.push(Line::from(vec![
                             Span::raw("       "),
                             Span::styled(
-                                truncate_args(args, area_width),
-                                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+                                "Running…",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::DIM),
                             ),
                         ]));
+                    } else {
+                        // Header: spinner + tool name — yellow.
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(
+                                "◌ ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                name.as_str(),
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::raw(" "),
+                            Span::styled("(running…)", ts_style),
+                        ]));
+                        // Args line (if present)
+                        if !args.is_empty() {
+                            lines.push(Line::from(vec![
+                                Span::raw("       "),
+                                Span::styled(
+                                    truncate_args(args, area_width),
+                                    Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
+                                ),
+                            ]));
+                        }
                     }
                     // Progress line (if the tool reports real-time output)
                     if let Some(msg) = progress_line {
@@ -284,33 +314,59 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                 }
 
                 ToolCallState::Complete(output) => {
-                    // Header line: timestamp + checkmark + tool name
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{timestamp} "), ts_style),
-                        Span::styled(
-                            "✓ ",
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(
-                            name.as_str(),
-                            Style::default()
-                                .fg(Color::Green)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
-                    // Output preview line (if present)
-                    if !output.is_empty() {
-                        let preview = truncate_output(output, area_width);
-                        if !preview.is_empty() {
+                    if is_user {
+                        // Header: "$ command" — green.
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(
+                                "$ ",
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(args.as_str(), Style::default().fg(Color::Green)),
+                        ]));
+                        // Multi-line output — dim gray, like old ShellOutput.
+                        for line in output.lines() {
                             lines.push(Line::from(vec![
                                 Span::raw("       "),
                                 Span::styled(
-                                    preview,
+                                    line,
                                     Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
                                 ),
                             ]));
+                        }
+                    } else {
+                        // Header: checkmark + tool name — green.
+                        lines.push(Line::from(vec![
+                            Span::styled(format!("{timestamp} "), ts_style),
+                            Span::styled(
+                                "✓ ",
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                name.as_str(),
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                        ]));
+                        // Output preview line (if present)
+                        if !output.is_empty() {
+                            let preview = truncate_output(output, area_width);
+                            if !preview.is_empty() {
+                                lines.push(Line::from(vec![
+                                    Span::raw("       "),
+                                    Span::styled(
+                                        preview,
+                                        Style::default()
+                                            .fg(Color::Gray)
+                                            .add_modifier(Modifier::DIM),
+                                    ),
+                                ]));
+                            }
                         }
                     }
                 }
@@ -345,61 +401,28 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                 .collect()
         }
 
-        ChatMessage::ShellOutput {
-            command,
-            state,
-            timestamp,
-        } => {
-            let mut lines = Vec::new();
-            // Header: timestamp + "$ " + command (green/bold)
-            lines.push(Line::from(vec![
-                Span::styled(format!("{timestamp} "), ts_style),
-                Span::styled(
-                    "$ ",
-                    Style::default()
-                        .fg(Color::Green)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(command.as_str(), Style::default().fg(Color::Green)),
-            ]));
-            match state {
-                ShellOutputState::Running => {
-                    // Show a running indicator so the user knows the command
-                    // is in progress (not frozen).
-                    lines.push(Line::from(vec![
-                        Span::raw("       "),
-                        Span::styled(
-                            "Running…",
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::DIM),
-                        ),
-                    ]));
-                }
-                ShellOutputState::Complete(output) => {
-                    // Output lines (dim)
-                    for line in output.lines() {
-                        lines.push(Line::from(vec![
-                            Span::raw("       "),
-                            Span::styled(
-                                line,
-                                Style::default().fg(Color::Gray).add_modifier(Modifier::DIM),
-                            ),
-                        ]));
-                    }
-                }
-            }
-            lines
-        }
-
-        ChatMessage::ShellConfirm {
-            command,
+        ChatMessage::Intervene {
+            title,
+            description,
+            options,
             responded,
+            chosen,
+            custom_text,
             timestamp,
             ..
         } => {
             let mut lines = Vec::new();
             if *responded {
+                let summary = if let Some(idx) = chosen {
+                    let label = options.get(*idx).map(|s| s.as_str()).unwrap_or("?");
+                    if let Some(text) = custom_text {
+                        format!("{label}: {text}")
+                    } else {
+                        label.to_string()
+                    }
+                } else {
+                    "Cancelled".to_string()
+                };
                 lines.push(Line::from(vec![
                     Span::styled(format!("{timestamp} "), ts_style),
                     Span::styled(
@@ -408,32 +431,46 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                             .fg(Color::Green)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled("Shell: ", Style::default().fg(Color::Yellow)),
-                    Span::styled(command.clone(), Style::default().fg(Color::White)),
+                    Span::styled(title.as_str(), Style::default().fg(Color::Yellow)),
+                    Span::raw(" "),
+                    Span::styled(summary, Style::default().fg(Color::White)),
                 ]));
             } else {
+                // Title
                 lines.push(Line::from(vec![
                     Span::styled(format!("{timestamp} "), ts_style),
                     Span::styled(
-                        "⚡ Shell command requested:",
+                        "⚡ ",
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("       "),
-                    Span::styled(command.clone(), Style::default().fg(Color::Cyan)),
-                ]));
-                lines.push(Line::from(vec![
-                    Span::raw("       "),
                     Span::styled(
-                        "Run this command? (Y/n)",
+                        title.as_str(),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
                     ),
                 ]));
+                // Description
+                for desc_line in description.lines() {
+                    lines.push(Line::from(vec![
+                        Span::raw("       "),
+                        Span::styled(desc_line, Style::default().fg(Color::Cyan)),
+                    ]));
+                }
+                // Options
+                if !options.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::raw("       "),
+                        Span::styled(
+                            format!("[{}]", options.join(" / ")),
+                            Style::default()
+                                .fg(Color::Yellow)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                    ]));
+                }
             }
             lines
         }
@@ -930,25 +967,54 @@ fn estimate_lines(msg: &ChatMessage, width: u16) -> usize {
         ChatMessage::Assistant { content, .. } => content.clone(),
         ChatMessage::Reasoning { content, .. } => content.clone(),
         ChatMessage::ToolCall {
-            name, args, state, ..
-        } => match state {
-            ToolCallState::Running => format!("  🔧 {name} {args}"),
-            ToolCallState::Complete(output) => {
-                format!("  ✓ {name} → {output}")
+            name,
+            args,
+            state,
+            origin,
+            ..
+        } => {
+            let is_user = matches!(origin, CallOrigin::User);
+            match state {
+                ToolCallState::Running => {
+                    if is_user {
+                        format!("$ {args}\nRunning…")
+                    } else {
+                        format!("  🔧 {name} {args}")
+                    }
+                }
+                ToolCallState::Complete(output) => {
+                    if is_user {
+                        format!("$ {args}\n{output}")
+                    } else {
+                        format!("  ✓ {name} → {output}")
+                    }
+                }
             }
-        },
+        }
         ChatMessage::System { content, .. } => format!("  ℹ {content}"),
-        ChatMessage::ShellOutput { command, state, .. } => match state {
-            ShellOutputState::Running => format!("$ {command}\nRunning…"),
-            ShellOutputState::Complete(output) => format!("$ {command}\n{output}"),
-        },
-        ChatMessage::ShellConfirm {
-            command, responded, ..
+        ChatMessage::Intervene {
+            title,
+            description,
+            options,
+            responded,
+            chosen,
+            custom_text,
+            ..
         } => {
             if *responded {
-                format!("  ✓ Shell: {command}")
+                if let Some(idx) = chosen {
+                    let label = options.get(*idx).map(|s| s.as_str()).unwrap_or("?");
+                    if let Some(text) = custom_text {
+                        format!("  ✓ {title} → {label}: {text}")
+                    } else {
+                        format!("  ✓ {title} → {label}")
+                    }
+                } else {
+                    format!("  ✓ {title} → Cancelled")
+                }
             } else {
-                format!("  ⚡ Shell: {command}\n       Run this command? (Y/n)")
+                let opts = options.join(" / ");
+                format!("  ⚡ {title}\n{description}\n  [{opts}]")
             }
         }
         ChatMessage::Error { content, .. } => content.clone(),

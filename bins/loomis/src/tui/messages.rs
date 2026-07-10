@@ -3,6 +3,7 @@
 //! Pure type definitions with no dependency on the `App` state machine.
 //! Separated from [`super::app`] so the file doesn't grow to 1500 lines.
 
+use engine::{CallOrigin, InterveneResponse};
 use std::time::SystemTime;
 
 // ── ChatMessage ──────────────────────────────────────────────────────────────────
@@ -19,31 +20,33 @@ pub enum ChatMessage {
     Assistant { content: String, timestamp: String },
     /// Chain-of-thought reasoning — yellow, dimmed.
     Reasoning { content: String, timestamp: String },
-    /// A tool call, either in-progress or completed.
+    /// A tool call or user command, either in-progress or completed.
+    /// The [`origin`](CallOrigin) field distinguishes LLM tool calls
+    /// from user-initiated `!command` invocations.
     ToolCall {
         id: String,
         name: String,
         args: String,
         state: ToolCallState,
+        origin: CallOrigin,
         /// Latest progress message while tool is Running (shown inline).
         progress_line: Option<String>,
         timestamp: String,
     },
     /// System-level message (slash commands, info).
     System { content: String, timestamp: String },
-    /// A shell command awaiting user confirmation.
-    ShellConfirm {
-        tool_call_id: String,
-        command: String,
+    /// A hook is requesting user intervention — rendered as an
+    /// interactive prompt with navigable options.
+    Intervene {
+        request_id: String,
+        title: String,
+        description: String,
+        options: Vec<String>,
         responded: bool,
-        timestamp: String,
-    },
-    /// Shell command output from user's `!` prefix — green header, dim output.
-    /// `state` controls rendering: `Running` shows a "Running…" indicator,
-    /// `Complete(output)` shows the captured stdout/stderr.
-    ShellOutput {
-        command: String,
-        state: ShellOutputState,
+        /// Index of the chosen option after the user responds.
+        chosen: Option<usize>,
+        /// Custom text if the user picked the "…"-suffixed option.
+        custom_text: Option<String>,
         timestamp: String,
     },
     /// Error display — red, bold.
@@ -69,18 +72,9 @@ impl ChatMessage {
 
 #[derive(Debug, Clone)]
 pub enum ToolCallState {
-    /// Arguments are still streaming in.
+    /// Arguments are still streaming in, or tool is executing.
     Running,
     /// Tool execution finished with this output.
-    Complete(String),
-}
-
-/// Tracks whether a user `!` shell command is still running or has completed.
-#[derive(Debug, Clone)]
-pub enum ShellOutputState {
-    /// Command is executing — the TUI shows a "Running…" indicator.
-    Running,
-    /// Command finished — output is displayed.
     Complete(String),
 }
 
@@ -97,10 +91,10 @@ pub enum TuiCommand {
     CancelGeneration,
     /// Reset conversation, preserving system prompt.
     ClearConversation,
-    /// User responded to a shell confirmation prompt.
-    ShellConfirmation {
-        tool_call_id: String,
-        approved: bool,
+    /// User responded to an intervention prompt.
+    InterveneResponse {
+        request_id: String,
+        response: InterveneResponse,
     },
     /// Signal the agent thread to exit.
     Exit,

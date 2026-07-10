@@ -10,8 +10,7 @@
 //! TUI thread                          Agent task (tokio::spawn)
 //! ─────────                          ────────────────────────
 //! cmd_tx ───────── TuiCommand ──────→ cmd_rx
-//! agent_rx ←────── AgentEvent ─────── agent_tx
-//! hook_rx  ←────── HookEvent  ─────── hook_tx (SandboxHook) / agent_handler
+//! agent_rx ←────── AgentEvent ─────── agent_tx (Agent loop + SandboxHook + user cmds)
 //! ```
 
 use std::io;
@@ -25,14 +24,14 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use deepseek::DeepSeekClient;
-use engine::{Agent, AgentEvent};
+use engine::{Agent, AgentEvent, CallOrigin, InterveneResponse};
 use memory::SharedMemory;
 use provider::{Message, Role};
 
 use super::app::App;
 use super::messages::TuiCommand;
 use super::shell_exec::execute_shell_command;
-use crate::app::{AgentKit, HookEvent};
+use crate::app::AgentKit;
 
 // ── Entry Point ──────────────────────────────────────────────────────────────────
 
@@ -50,9 +49,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         model: _kit_model,
         agent_rx,
         agent_tx,
-        hook_rx,
-        hook_tx,
-        approval_tx,
+        intervene_tx,
     } = kit;
 
     // ── Create command channel ────────────────────────────────────
@@ -64,9 +61,8 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         memory.clone(),
         cmd_rx,
         agent_tx,
-        hook_tx.clone(),
         workspace_root.clone(),
-        approval_tx,
+        intervene_tx,
     ));
 
     // ── Terminal setup ───────────────────────────────────────────────
@@ -93,7 +89,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
     let mut app = App::new(model, memory, tool_names, workspace_root);
 
     // ── Event loop ───────────────────────────────────────────────────
-    let result = run_event_loop(&mut terminal, &mut app, agent_rx, hook_rx, &cmd_tx);
+    let result = run_event_loop(&mut terminal, &mut app, agent_rx, &cmd_tx);
 
     // ── Cleanup ──────────────────────────────────────────────────────
     let _ = cmd_tx.send(TuiCommand::Exit);
@@ -113,16 +109,14 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
 
 // ── Event Loop ───────────────────────────────────────────────────────────────────
 
-/// The main TUI loop: poll input, drain agent + hook events, render.
+/// The main TUI loop: poll input, drain agent events, render.
 fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
     app: &mut App,
     agent_rx: UnboundedReceiver<AgentEvent>,
-    hook_rx: UnboundedReceiver<HookEvent>,
     cmd_tx: &UnboundedSender<TuiCommand>,
 ) -> io::Result<()> {
     let mut agent_rx = agent_rx;
-    let mut hook_rx = hook_rx;
     let mut pending_events: Vec<AgentEvent> = Vec::new();
 
     loop {
@@ -170,14 +164,9 @@ fn run_event_loop(
             }
         }
 
-        // ── Drain agent events ───────────────────────────────────────
+        // ── Drain agent events (single channel for everything) ─────
         while let Ok(event) = agent_rx.try_recv() {
             pending_events.push(event);
-        }
-
-        // ── Drain hook events (shell events) ────────────────────────
-        while let Ok(event) = hook_rx.try_recv() {
-            app.apply_hook_event(event);
         }
 
         // Apply all agent events together
@@ -209,9 +198,8 @@ async fn agent_handler(
     memory: SharedMemory,
     mut cmd_rx: UnboundedReceiver<TuiCommand>,
     agent_tx: UnboundedSender<AgentEvent>,
-    hook_tx: UnboundedSender<HookEvent>,
     workspace_root: PathBuf,
-    approval_tx: std::sync::mpsc::SyncSender<bool>,
+    intervene_tx: std::sync::mpsc::SyncSender<InterveneResponse>,
 ) {
     let mut current_run: Option<tokio::task::JoinHandle<()>> = None;
 
@@ -298,13 +286,13 @@ async fn agent_handler(
                 }
             }
 
-            TuiCommand::ShellConfirmation {
-                tool_call_id: _,
-                approved,
+            TuiCommand::InterveneResponse {
+                request_id: _,
+                response,
             } => {
-                // Unblock the synchronous approval hook waiting in
+                // Unblock the synchronous intervention hook waiting in
                 // SandboxHook::before_tool_call.
-                let _ = approval_tx.send(approved);
+                let _ = intervene_tx.send(response);
             }
 
             TuiCommand::RunShell(command) => {
@@ -313,16 +301,29 @@ async fn agent_handler(
                 // in a blocking thread; when it completes, output is
                 // pushed to memory and sent to the TUI for display.
                 //
-                // Send an immediate "Running" event so the user knows
-                // the command is in progress (not frozen).
-                let _ = hook_tx.send(HookEvent::ShellRunning {
-                    command: command.clone(),
+                // Use unified ToolCall / ToolResult events with User origin
+                // instead of the old ShellRunning / ShellOutput events.
+                let shell_id = format!(
+                    "shell-{:x}",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_nanos())
+                        .unwrap_or(0)
+                );
+
+                // Notify TUI that the command is starting.
+                let _ = agent_tx.send(AgentEvent::ToolCall {
+                    id: shell_id.clone(),
+                    name: "shell".into(),
+                    arguments: command.clone(),
+                    origin: CallOrigin::User,
                 });
 
-                let tx = hook_tx.clone();
+                let tx = agent_tx.clone();
                 let mem = memory.clone();
                 let ws = workspace_root.clone();
                 let cmd_for_blocking = command.clone();
+                let sid = shell_id.clone();
 
                 tokio::spawn(async move {
                     let output = tokio::task::spawn_blocking(move || {
@@ -343,8 +344,12 @@ async fn agent_handler(
                         ));
                     }
 
-                    // Send to TUI for display
-                    let _ = tx.send(HookEvent::ShellOutput { command, output });
+                    // Send result to TUI for display
+                    let _ = tx.send(AgentEvent::ToolResult {
+                        id: sid,
+                        name: "shell".into(),
+                        output,
+                    });
                 });
             }
 

@@ -16,8 +16,7 @@ use std::path::PathBuf;
 use engine::AgentEvent;
 use memory::SharedMemory;
 
-use super::messages::{ChatMessage, ShellOutputState, ToolCallState};
-use crate::app::HookEvent;
+use super::messages::{ChatMessage, ToolCallState};
 
 // ── App ──────────────────────────────────────────────────────────────────────────
 
@@ -69,6 +68,11 @@ pub struct App {
     /// `None` until the first message after app start or `/new`.
     pub conversation_title: Option<String>,
 
+    // ── Intervention UI state ──
+    /// Index of the currently highlighted option while an intervention
+    /// prompt is pending. `None` when no intervention is active.
+    pub intervene_selection: Option<usize>,
+
     // ── Exit signal ──
     pub should_quit: bool,
 }
@@ -102,6 +106,7 @@ impl App {
             draft_input: String::new(),
             thread_picker: None,
             conversation_title: None,
+            intervene_selection: None,
             should_quit: false,
         }
     }
@@ -144,12 +149,14 @@ impl App {
                 id,
                 name,
                 arguments,
+                origin,
             } => {
                 self.messages.push(ChatMessage::ToolCall {
                     id,
                     name,
                     args: arguments,
                     state: ToolCallState::Running,
+                    origin,
                     progress_line: None,
                     timestamp: ChatMessage::now_timestamp(),
                 });
@@ -188,66 +195,23 @@ impl App {
             AgentEvent::Done => {
                 self.streaming = false;
             }
+
+            AgentEvent::NeedUserIntervene(req) => {
+                self.messages.push(ChatMessage::Intervene {
+                    request_id: req.request_id,
+                    title: req.title,
+                    description: req.description,
+                    options: req.options,
+                    responded: false,
+                    chosen: None,
+                    custom_text: None,
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+            }
         }
 
         // Auto-scroll to bottom when new content arrives and user hasn't
         // manually scrolled up.
-        if self.auto_scroll {
-            self.scroll_offset = 0;
-        }
-    }
-
-    /// Processes a [`HookEvent`] — loomis-specific shell events.
-    ///
-    /// These were previously part of [`AgentEvent`] but have been extracted
-    /// into their own enum so the engine crate stays generic.
-    pub fn apply_hook_event(&mut self, event: HookEvent) {
-        match event {
-            HookEvent::ShellRunning { command } => {
-                self.messages.push(ChatMessage::ShellOutput {
-                    command,
-                    state: ShellOutputState::Running,
-                    timestamp: ChatMessage::now_timestamp(),
-                });
-            }
-
-            HookEvent::ShellOutput { command, output } => {
-                // Find the Running entry for this command and update it
-                // with the captured output. If not found (e.g. CLI mode
-                // didn't send ShellRunning), push a new message.
-                for msg in self.messages.iter_mut().rev() {
-                    if let ChatMessage::ShellOutput {
-                        command: cmd,
-                        state,
-                        ..
-                    } = msg
-                        && *cmd == command
-                        && matches!(state, ShellOutputState::Running)
-                    {
-                        *state = ShellOutputState::Complete(output);
-                        return;
-                    }
-                }
-                self.messages.push(ChatMessage::ShellOutput {
-                    command,
-                    state: ShellOutputState::Complete(output),
-                    timestamp: ChatMessage::now_timestamp(),
-                });
-            }
-
-            HookEvent::ShellApprovalRequested {
-                tool_call_id,
-                command,
-            } => {
-                self.messages.push(ChatMessage::ShellConfirm {
-                    tool_call_id,
-                    command,
-                    responded: false,
-                    timestamp: ChatMessage::now_timestamp(),
-                });
-            }
-        }
-
         if self.auto_scroll {
             self.scroll_offset = 0;
         }
@@ -261,6 +225,7 @@ mod tests {
     use super::super::messages::TuiCommand;
     use super::*;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use engine::CallOrigin;
 
     fn ts() -> String {
         "00:00:00".into()
@@ -313,6 +278,7 @@ mod tests {
             id: "t1".into(),
             name: "echo".into(),
             arguments: r#"{"x":1}"#.into(),
+            origin: CallOrigin::Llm,
         });
         app.apply_event(AgentEvent::ToolResult {
             id: "t1".into(),
@@ -349,6 +315,7 @@ mod tests {
             id: "abc".into(),
             name: "ls".into(),
             arguments: r#"{"path":"."}"#.into(),
+            origin: CallOrigin::Llm,
         });
         app.apply_event(AgentEvent::ToolResult {
             id: "abc".into(),
@@ -582,20 +549,36 @@ mod tests {
     fn test_apply_shell_output_creates_message() {
         let mut app = make_app();
         app.messages.clear();
-        app.apply_hook_event(HookEvent::ShellOutput {
-            command: "echo test".into(),
+        // User !command now uses unified ToolCall with origin: User
+        app.apply_event(AgentEvent::ToolCall {
+            id: "shell-1".into(),
+            name: "shell".into(),
+            arguments: "echo test".into(),
+            origin: CallOrigin::User,
+        });
+        app.apply_event(AgentEvent::ToolResult {
+            id: "shell-1".into(),
+            name: "shell".into(),
             output: "test".into(),
         });
         assert_eq!(app.messages.len(), 1);
         match &app.messages[0] {
-            ChatMessage::ShellOutput { command, state, .. } => {
-                assert_eq!(command, "echo test");
-                let ShellOutputState::Complete(output) = state else {
-                    panic!("expected Complete, got {state:?}");
-                };
-                assert!(output.contains("test"), "output: {output}");
+            ChatMessage::ToolCall {
+                name,
+                args,
+                state,
+                origin,
+                ..
+            } => {
+                assert_eq!(name, "shell");
+                assert_eq!(args, "echo test");
+                assert!(matches!(origin, CallOrigin::User));
+                match state {
+                    ToolCallState::Complete(output) => assert!(output.contains("test")),
+                    ToolCallState::Running => panic!("expected Complete"),
+                }
             }
-            other => panic!("expected ShellOutput, got {other:?}"),
+            other => panic!("expected ToolCall, got {other:?}"),
         }
     }
 

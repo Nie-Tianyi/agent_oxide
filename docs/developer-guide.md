@@ -20,6 +20,10 @@ Agent Oxide 是一个模块化的 Rust Agent 框架（Rust 2024 edition，Tokio 
 
 ## 1. 架构概览
 
+### 项目架构
+
+![项目的四层架构](./assets/architecture.jpg)
+
 ### 工作空间结构
 
 ```

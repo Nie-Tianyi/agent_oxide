@@ -32,6 +32,7 @@ pub enum AgentError {
     NoChoices,
     Memory(String),
     ToolRejected { name: String, reason: String },
+    StreamTimeout,
 }
 
 impl fmt::Display for AgentError {
@@ -44,6 +45,7 @@ impl fmt::Display for AgentError {
             Self::NoChoices => write!(f, "response has no choices"),
             Self::Memory(msg) => write!(f, "memory error: {msg}"),
             Self::ToolRejected { name, reason } => write!(f, "tool '{name}' rejected: {reason}"),
+            Self::StreamTimeout => write!(f, "stream timed out — no data received from provider"),
         }
     }
 }
@@ -572,8 +574,23 @@ impl<C: LLMClient> Agent<C> {
                 Err(e) => return self.fail_run(e, &tx),
             };
 
+            // ── Per-chunk timeout (prevents hang on stalled SSE stream) ──
+            const STREAM_CHUNK_TIMEOUT_SECS: u64 = 120;
+
             let mut acc = StreamAccumulator::new();
-            while let Some(chunk_result) = stream.next().await {
+            loop {
+                let chunk_result = match tokio::time::timeout(
+                    Duration::from_secs(STREAM_CHUNK_TIMEOUT_SECS),
+                    stream.next(),
+                )
+                .await
+                {
+                    Ok(Some(result)) => result,
+                    Ok(None) => break,
+                    Err(_elapsed) => {
+                        return self.fail_run(AgentError::StreamTimeout, &tx);
+                    }
+                };
                 let chunk = match chunk_result {
                     Ok(c) => c,
                     Err(e) => return self.fail_run(AgentError::Provider(e), &tx),

@@ -10,27 +10,39 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use crate::sandbox::env_sanitizer;
+
+/// Maximum output bytes returned — mirrors the `ShellTool` limit.
+const MAX_OUTPUT_BYTES: usize = 100_000;
+
 /// Executes a shell command in the workspace root, capturing stdout and stderr.
 ///
 /// On Windows, uses `cmd /C` for near-instant startup (unlike PowerShell which
 /// loads .NET CLR on every invocation). Encoding is handled via
 /// [`decode_windows_stdout`], which tries UTF-8 first and falls back to the
 /// system ANSI code page.
+///
+/// Environment is sanitised via [`env_sanitizer::sanitize`] before spawning,
+/// and output is truncated at [`MAX_OUTPUT_BYTES`] to prevent flooding
+/// the conversation context.
 pub fn execute_shell_command(command: &str, workspace_root: &Path) -> String {
     #[cfg(target_os = "windows")]
     let (shell, shell_arg) = ("cmd", "/C");
     #[cfg(not(target_os = "windows"))]
     let (shell, shell_arg) = ("sh", "-c");
 
-    let child = match Command::new(shell)
-        .arg(shell_arg)
+    let mut cmd = Command::new(shell);
+    cmd.arg(shell_arg)
         .arg(command)
         .current_dir(workspace_root)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+
+    // Sanitize environment before spawning (same as LLM-facing ShellTool).
+    env_sanitizer::sanitize(&mut cmd, workspace_root, true);
+
+    let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => return format!("Failed to spawn command: {e}"),
     };
@@ -57,7 +69,7 @@ pub fn execute_shell_command(command: &str, workspace_root: &Path) -> String {
         #[cfg(target_os = "windows")]
         {
             let _ = Command::new("taskkill")
-                .args(["/F", "/PID", &pid.to_string()])
+                .args(["/F", "/T", "/PID", &pid.to_string()])
                 .stdout(Stdio::null())
                 .stderr(Stdio::null())
                 .spawn();
@@ -92,13 +104,17 @@ pub fn execute_shell_command(command: &str, workspace_root: &Path) -> String {
 
     let mut result = String::new();
     if !stdout_clean.is_empty() {
-        result.push_str(stdout_clean);
+        result.push_str(&truncate_output(stdout_clean, MAX_OUTPUT_BYTES));
     }
     if !stderr_clean.is_empty() {
         if !result.is_empty() {
             result.push('\n');
         }
-        result.push_str(stderr_clean);
+        // Reserve ~20% of budget for stderr (or at least 10KB).
+        let stderr_max = (MAX_OUTPUT_BYTES / 5).max(10_240);
+        let remaining = MAX_OUTPUT_BYTES.saturating_sub(result.len());
+        let stderr_limit = stderr_max.min(remaining);
+        result.push_str(&truncate_output(stderr_clean, stderr_limit));
     }
 
     // If nothing was produced, indicate the command ran
@@ -117,6 +133,16 @@ pub fn execute_shell_command(command: &str, workspace_root: &Path) -> String {
     }
 
     result
+}
+
+/// Truncate a string at `max` bytes, preserving a valid UTF-8 boundary.
+fn truncate_output(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        s.to_string()
+    } else {
+        let boundary = s.floor_char_boundary(max);
+        format!("{}…\n[output truncated at {max} bytes]", &s[..boundary])
+    }
 }
 
 /// Decodes child-process stdout/stderr bytes to a Rust string.

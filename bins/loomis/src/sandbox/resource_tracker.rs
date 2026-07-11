@@ -57,6 +57,20 @@ impl ResourceTracker {
         Ok(())
     }
 
+    /// Cancel a previously-checked operation — decrements the concurrent
+    /// counter without recording a completed operation.  Call this when a
+    /// tool passes `check()` but is subsequently rejected (e.g. by
+    /// ShellFilter or user denial in `before_tool_call`).
+    pub fn cancel(&self, session_id: &str, tool_name: &str) {
+        if tool_name != "shell" {
+            return;
+        }
+        let sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(stats) = sessions.get(session_id) {
+            stats.active_shells.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+
     /// Record that an operation completed (must be paired with `check`).
     pub fn record(&self, session_id: &str, tool_name: &str) {
         let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());

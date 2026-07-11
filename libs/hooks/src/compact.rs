@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::AgentHook;
 use memory::SharedMemory;
@@ -109,6 +110,9 @@ pub struct MacroCompactHook<C: LLMClient> {
     pub keep_last_n: usize,
     /// LLM client (same provider, different model).
     pub client: C,
+    /// Set when a summarisation attempt fails — prevents retrying on every
+    /// subsequent LLM call until memory grows further or compaction succeeds.
+    pub compaction_failed: AtomicBool,
 }
 
 impl<C: LLMClient> MacroCompactHook<C> {
@@ -118,6 +122,7 @@ impl<C: LLMClient> MacroCompactHook<C> {
             threshold,
             keep_last_n,
             client,
+            compaction_failed: AtomicBool::new(false),
         }
     }
 }
@@ -157,12 +162,31 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
             CompletionRequest::new(&self.compact_model, vec![Message::new(Role::User, prompt)]);
 
         // Block the agent loop (not the UI — different thread).
-        let summary = tokio::runtime::Handle::current()
-            .block_on(self.client.generate(request))
-            .ok()
-            .and_then(|resp| resp.choices.into_iter().next())
-            .and_then(|c| c.message.content)
-            .unwrap_or_default();
+        let result = tokio::runtime::Handle::current().block_on(self.client.generate(request));
+
+        let summary = match result {
+            Ok(resp) => {
+                // Summarisation succeeded — clear the failure flag.
+                self.compaction_failed.store(false, Ordering::Relaxed);
+                resp.choices
+                    .into_iter()
+                    .next()
+                    .and_then(|c| c.message.content)
+                    .unwrap_or_default()
+            }
+            Err(e) => {
+                // Summarisation failed — log the error and set a flag to
+                // avoid retrying on every subsequent LLM call (which would
+                // burn API calls in a tight loop).
+                if !self.compaction_failed.swap(true, Ordering::Relaxed) {
+                    eprintln!(
+                        "WARNING: Macro-compaction summarisation failed: {e}\n  \
+                         Will not retry compaction until it succeeds once."
+                    );
+                }
+                String::new()
+            }
+        };
 
         if !summary.is_empty() {
             let mut mem = memory.write().expect("memory lock poisoned");

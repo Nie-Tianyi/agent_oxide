@@ -18,6 +18,7 @@
 //! handled by `WorkspaceFs` in the tool implementation).
 
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::Duration;
 
 use engine::{
     AgentError, AgentEvent, AgentHook, InterventionRequest, InterventionResponse, RunOutcome,
@@ -88,19 +89,29 @@ impl SandboxHook {
             }));
         }
 
-        // Block until the TUI responds.
-        let response = self
+        // Block until the TUI responds (with timeout to prevent deadlock).
+        let response = match self
             .intervention_rx
             .lock()
             .expect("lock poisoned")
-            .recv()
-            .unwrap_or({
+            .recv_timeout(Duration::from_secs(120))
+        {
+            Ok(resp) => resp,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // Timeout — treat as deny.
+                InterventionResponse {
+                    chosen: Some(1), // "Deny"
+                    custom_text: None,
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                 // Channel closed — treat as deny.
                 InterventionResponse {
                     chosen: Some(1), // "Deny"
                     custom_text: None,
                 }
-            });
+            }
+        };
 
         match response.chosen {
             Some(0) => Ok(()), // "Approve"
@@ -164,6 +175,9 @@ impl AgentHook for SandboxHook {
                     verdict: "blocked".into(),
                     outcome: reason.clone(),
                 });
+                // Cancel the active_shells increment from check() —
+                // the tool was rejected before execution.
+                self.resource_tracker.cancel(session_id, "shell");
                 Err(AgentError::ToolRejected {
                     name: "shell".into(),
                     reason: format!("Blocked by sandbox: {reason}"),
@@ -198,6 +212,9 @@ impl AgentHook for SandboxHook {
                         Ok(())
                     }
                     Err(e) => {
+                        // Cancel the active_shells increment from check() —
+                        // the tool was rejected by the user before execution.
+                        self.resource_tracker.cancel(session_id, "shell");
                         self.audit_logger.log(AuditEntry {
                             timestamp: memory::iso8601_now(),
                             session_id: session_id.to_string(),

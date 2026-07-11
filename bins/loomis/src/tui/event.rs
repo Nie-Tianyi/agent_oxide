@@ -302,7 +302,7 @@ async fn agent_handler(
                 // in a blocking thread; when it completes, output is
                 // pushed to memory and sent to the TUI for display.
                 //
-                // Use unified ToolCall / ToolResult events with User origin
+                // Use unified ToolCall / ToolSuccessful events with User origin
                 // instead of the old ShellRunning / ShellOutput events.
                 let shell_id = format!(
                     "shell-{:x}",
@@ -346,7 +346,7 @@ async fn agent_handler(
                     }
 
                     // Send result to TUI for display
-                    let _ = tx.send(AgentEvent::ToolResult {
+                    let _ = tx.send(AgentEvent::ToolSuccessful {
                         id: sid,
                         name: "shell".into(),
                         output,

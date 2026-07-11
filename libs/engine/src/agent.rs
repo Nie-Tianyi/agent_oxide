@@ -154,14 +154,19 @@ pub enum AgentEvent {
         /// Who initiated this call — the LLM or the user.
         origin: CallOrigin,
     },
-    /// Result from a completed tool or user-command execution (success).
-    ToolResult {
+    /// Tool execution completed successfully.
+    ToolSuccessful {
         id: String,
         name: String,
         output: String,
     },
-    /// Tool execution failed — emitted instead of [`ToolResult`](AgentEvent::ToolResult)
-    /// when the tool returns an error or is not found.
+    /// A hook rejected the tool before it could execute (e.g. sandbox policy).
+    ToolRejected {
+        id: String,
+        name: String,
+        reason: String,
+    },
+    /// Tool execution failed — the tool returned an error or was not found.
     ToolFailure {
         id: String,
         name: String,
@@ -470,10 +475,10 @@ impl<C: LLMClient> Agent<C> {
                                 mem.push(msg);
                             }
                             if let Some(ref tx) = tx {
-                                let _ = tx.send(AgentEvent::ToolResult {
+                                let _ = tx.send(AgentEvent::ToolRejected {
                                     id: tc.id.clone(),
                                     name: tc.function.name.clone(),
-                                    output: format!("[rejected] {e}"),
+                                    reason: e.to_string(),
                                 });
                             }
                             blocked = true;
@@ -508,7 +513,7 @@ impl<C: LLMClient> Agent<C> {
                                     Progress::Done(output) => final_output = output,
                                 }
                             }
-                            // Success path: notify hooks, push to memory, emit ToolResult.
+                            // Success path: notify hooks, push to memory, emit ToolSuccessful.
                             for hook in &self.ctx.hooks {
                                 hook.after_tool_call("default", tc, &final_output);
                             }
@@ -517,7 +522,7 @@ impl<C: LLMClient> Agent<C> {
                                 mem.push(Message::tool_result(&tc.id, &final_output));
                             }
                             if let Some(ref tx) = tx {
-                                let _ = tx.send(AgentEvent::ToolResult {
+                                let _ = tx.send(AgentEvent::ToolSuccessful {
                                     id: tc.id.clone(),
                                     name: tc.function.name.clone(),
                                     output: final_output.clone(),

@@ -74,8 +74,10 @@ impl ChatMessage {
 pub enum ToolCallState {
     /// Arguments are still streaming in, or tool is executing.
     Running,
-    /// Tool execution finished with this output.
+    /// Tool execution completed successfully with this output.
     Complete(String),
+    /// A hook rejected the tool before execution (e.g. sandbox policy).
+    Rejected(String),
     /// Tool execution failed with this error.
     Error(String),
 }

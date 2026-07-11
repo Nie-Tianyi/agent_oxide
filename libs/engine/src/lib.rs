@@ -24,7 +24,7 @@
 //! | [`EngineContext`] | Configuration bag — use [`EngineContext::builder`] for the advanced API |
 //! | [`EngineContextBuilder`] | Builder for `EngineContext` — advanced users only |
 //! | [`AgentHook`] | Lifecycle callbacks — implement to observe or intercept agent actions |
-//! | [`AgentEvent`] | Streaming events — Token, ToolCall, ToolResult, Done, ... |
+//! | [`AgentEvent`] | Streaming events — Token, ToolCall, ToolSuccessful, ToolFailure, Done, ... |
 //! | [`AgentError`] | Error type — Provider, Tool, MaxStepsReached, ... |
 
 mod agent;

@@ -187,12 +187,27 @@ impl App {
                 });
             }
 
-            AgentEvent::ToolResult { id, output, .. } => {
+            AgentEvent::ToolSuccessful { id, output, .. } => {
                 for msg in self.messages.iter_mut().rev() {
                     if let ChatMessage::ToolCall { id: mid, state, .. } = msg
                         && *mid == id
                     {
                         *state = ToolCallState::Complete(output);
+                        break;
+                    }
+                }
+            }
+
+            AgentEvent::ToolRejected {
+                id,
+                name: _,
+                reason,
+            } => {
+                for msg in self.messages.iter_mut().rev() {
+                    if let ChatMessage::ToolCall { id: mid, state, .. } = msg
+                        && *mid == id
+                    {
+                        *state = ToolCallState::Rejected(reason);
                         break;
                     }
                 }
@@ -316,7 +331,7 @@ mod tests {
             arguments: r#"{"x":1}"#.into(),
             origin: CallOrigin::Llm,
         });
-        app.apply_event(AgentEvent::ToolResult {
+        app.apply_event(AgentEvent::ToolSuccessful {
             id: "t1".into(),
             name: "echo".into(),
             output: "ok".into(),
@@ -353,7 +368,7 @@ mod tests {
             arguments: r#"{"path":"."}"#.into(),
             origin: CallOrigin::Llm,
         });
-        app.apply_event(AgentEvent::ToolResult {
+        app.apply_event(AgentEvent::ToolSuccessful {
             id: "abc".into(),
             name: "ls".into(),
             output: "src/\nCargo.toml".into(),
@@ -375,6 +390,7 @@ mod tests {
                     ToolCallState::Complete(out) => assert_eq!(out, "src/\nCargo.toml"),
                     ToolCallState::Running => panic!("expected Complete"),
                     ToolCallState::Error(_) => panic!("expected Complete, got Error"),
+                    ToolCallState::Rejected(_) => panic!("expected Complete, got Rejected"),
                 }
             }
             other => panic!("expected ToolCall, got {other:?}"),
@@ -593,7 +609,7 @@ mod tests {
             arguments: "echo test".into(),
             origin: CallOrigin::User,
         });
-        app.apply_event(AgentEvent::ToolResult {
+        app.apply_event(AgentEvent::ToolSuccessful {
             id: "shell-1".into(),
             name: "shell".into(),
             output: "test".into(),
@@ -614,6 +630,7 @@ mod tests {
                     ToolCallState::Complete(output) => assert!(output.contains("test")),
                     ToolCallState::Running => panic!("expected Complete"),
                     ToolCallState::Error(_) => panic!("expected Complete, got Error"),
+                    ToolCallState::Rejected(_) => panic!("expected Complete, got Rejected"),
                 }
             }
             other => panic!("expected ToolCall, got {other:?}"),

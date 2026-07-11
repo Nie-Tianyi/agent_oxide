@@ -211,13 +211,8 @@ async fn agent_handler(
                     h.abort();
                 }
 
-                // Push user message to shared memory.
-                {
-                    let mut mem = memory.write().unwrap();
-                    mem.push(Message::new(Role::User, &input));
-                }
-
                 // Spawn the agent in a background task. We clone the
+                // (`run_with_events` pushes the user message to memory internally)
                 // sender so the task owns its own — when the task
                 // completes, its sender is dropped, freeing the channel
                 // for the next run.

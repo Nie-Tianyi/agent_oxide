@@ -8,6 +8,7 @@ use engine::{Agent, EngineContext};
 use hooks;
 use memory::{Memory, SharedMemory};
 use provider::{Message, Role};
+use subagent::{self, SubagentConfig};
 use tokio::sync::mpsc;
 use tools::ToolRegistry;
 
@@ -68,6 +69,12 @@ times as fast). When algorithm B is chosen, it must be accompanied by thorough \
 documentation, including but not limited to its purpose, inputs, outputs, underlying \
 principles, etc. When necessary, educate your users—do not assume they have any \
 background of the field.
+
+9. **Delegate complex work.** Use the `task` tool to spawn a sub-agent for \
+multi-step investigation, code analysis, or refactoring. The sub-agent has \
+read-only tools (read, ls, glob, grep, calculator) and works independently. \
+Be specific in your description and prompt — the sub-agent works independently \
+and reports back.
 ";
 
 // ── AgentEvent & InterveneResponse (re-exported from engine) ─────────────────
@@ -126,15 +133,33 @@ pub fn build_coding_agent(
         sandbox_config,
     )));
 
-    let tool_names: Vec<String> = registry.iter().map(|(n, _)| n.to_string()).collect();
-    let registry = Arc::new(registry);
-
     // ── Memory ───────────────────────────────────────────────
     let memory: SharedMemory = Arc::new(std::sync::RwLock::new(Memory::new()));
 
     // ── LLM Clients ─────────────────────────────────────────────
     let client = DeepSeekClient::new(api_key);
+    let subagent_client = client.clone(); // clone before client is moved into EngineContext
     let compact_client = DeepSeekClient::new(api_key);
+
+    // ── Subagent tool (read-only subset, no shell, no write, no task) ──
+    let subagent_registry =
+        subagent::filter_tools(&registry, &["read", "ls", "glob", "grep", "calculator"]);
+    let subagent_registry = Arc::new(subagent_registry);
+
+    let subagent_config = SubagentConfig {
+        model: flash_model.to_string(),
+        ..Default::default()
+    };
+    let subagent_tool = subagent::SubagentTool::new(
+        subagent_client,
+        subagent_config,
+        subagent_registry,
+        memory.clone(),
+    );
+    registry.register(Arc::new(subagent_tool));
+
+    let tool_names: Vec<String> = registry.iter().map(|(n, _)| n.to_string()).collect();
+    let registry = Arc::new(registry);
 
     // ── Sandbox components ────────────────────────────────────
     let shell_filter = ShellFilter::from_config(sandbox_config);

@@ -313,6 +313,13 @@ impl<C: LLMClient> Agent<C> {
             });
         }
 
+        // Push the user message into conversation memory — this is what
+        // makes `user_input` the actual input to the agent, not just a label.
+        {
+            let mut mem = self.ctx.memory.write().unwrap();
+            mem.push(Message::new(Role::User, user_input));
+        }
+
         let mut steps = 0;
         loop {
             if steps >= self.ctx.max_steps {
@@ -609,6 +616,13 @@ impl<C: LLMClient> Agent<C> {
                 session_id: "default".into(),
                 user_input: user_input.to_string(),
             });
+        }
+
+        // Push the user message into conversation memory — this is what
+        // makes `user_input` the actual input to the agent, not just a label.
+        {
+            let mut mem = self.ctx.memory.write().unwrap();
+            mem.push(Message::new(Role::User, user_input));
         }
 
         let mut steps = 0;

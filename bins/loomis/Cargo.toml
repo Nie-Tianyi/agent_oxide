@@ -19,6 +19,7 @@ tools = { path = "../../libs/tools" }
 memory = { path = "../../libs/memory" }
 engine = { path = "../../libs/engine" }
 hooks = { path = "../../libs/hooks" }
+subagent = { path = "../../libs/subagent" }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

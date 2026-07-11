@@ -907,6 +907,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "subagent",
  "tempfile",
  "tokio",
  "tools",
@@ -1688,6 +1689,21 @@ dependencies = [
  "quote",
  "rustversion",
  "syn",
+]
+
+[[package]]
+name = "subagent"
+version = "0.1.0"
+dependencies = [
+ "engine",
+ "futures-util",
+ "memory",
+ "provider",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tools",
 ]
 
 [[package]]

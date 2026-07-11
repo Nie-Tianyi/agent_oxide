@@ -11,6 +11,7 @@ use crate::stream::DeepSeekStream;
 const DEFAULT_BASE_URL: &str = "https://api.deepseek.com";
 
 /// DeepSeek API client — implements [`LLMClient`].
+#[derive(Clone)]
 pub struct DeepSeekClient {
     api_key: String,
     base_url: String,

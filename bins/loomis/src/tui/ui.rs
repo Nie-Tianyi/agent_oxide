@@ -692,11 +692,7 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
         Style::default().fg(Color::Cyan)
     };
 
-    let title = if app.streaming {
-        " Input (streaming…) "
-    } else {
-        " Input "
-    };
+    let title = if app.streaming { " Inject " } else { " Input " };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -712,7 +708,17 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     let display_lines = build_input_lines(app, cursor_style);
 
     // Show a hint when the input is empty
-    let lines: Vec<Line<'_>> = if app.input.is_empty() && !app.streaming {
+    let lines: Vec<Line<'_>> = if app.input.is_empty() && app.streaming {
+        vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                " Type to inject a hint while the agent is running. Enter to send.",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )),
+        ]
+    } else if app.input.is_empty() && !app.streaming {
         vec![
             Line::from(Span::raw("")),
             Line::from(Span::styled(

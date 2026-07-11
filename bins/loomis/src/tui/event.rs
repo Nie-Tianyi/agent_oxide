@@ -24,7 +24,7 @@ use ratatui::backend::CrosstermBackend;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
 use deepseek::DeepSeekClient;
-use engine::{Agent, AgentEvent, CallOrigin, InterventionResponse};
+use engine::{Agent, AgentEvent, CallOrigin};
 use memory::SharedMemory;
 use provider::{Message, Role};
 
@@ -49,7 +49,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         model: _kit_model,
         agent_rx,
         agent_tx,
-        intervention_tx,
+        response_router,
     } = kit;
 
     // ── Create command channel ────────────────────────────────────
@@ -62,7 +62,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         cmd_rx,
         agent_tx,
         workspace_root.clone(),
-        intervention_tx,
+        response_router,
     ));
 
     // ── Terminal setup ───────────────────────────────────────────────
@@ -199,7 +199,7 @@ async fn agent_handler(
     mut cmd_rx: UnboundedReceiver<TuiCommand>,
     agent_tx: UnboundedSender<AgentEvent>,
     workspace_root: PathBuf,
-    intervention_tx: std::sync::mpsc::SyncSender<InterventionResponse>,
+    response_router: Arc<crate::hooks::ResponseRouter>,
 ) {
     let mut current_run: Option<tokio::task::JoinHandle<()>> = None;
 
@@ -283,12 +283,14 @@ async fn agent_handler(
             }
 
             TuiCommand::InterventionResponse {
-                request_id: _,
+                request_id,
                 response,
             } => {
-                // Unblock the synchronous intervention hook waiting in
-                // SandboxHook::before_tool_call.
-                let _ = intervention_tx.send(response);
+                // Route the response to the correct requester
+                // (SandboxHook, AskUserQuestionTool, …) via the
+                // shared router.  The router removes the sender
+                // from its map and delivers the response.
+                response_router.route(&request_id, response);
             }
 
             TuiCommand::RunShell(command) => {

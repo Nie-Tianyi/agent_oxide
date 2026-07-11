@@ -5,7 +5,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use provider::Role;
+use provider::{Message, Role};
 
 use super::app::App;
 use super::messages::{ChatMessage, TuiCommand, is_valid_thread_name, truncate_for_display};
@@ -39,12 +39,10 @@ impl App {
                     return None;
                 }
 
-                if self.streaming {
-                    return None;
-                }
-
                 let input = self.input.trim().to_string();
                 if input.is_empty() {
+                    self.input.clear();
+                    self.input_cursor = 0;
                     return None;
                 }
 
@@ -52,6 +50,23 @@ impl App {
                 self.history.push(input.clone());
                 self.history_index = None;
                 self.draft_input.clear();
+
+                // ── Inject mode: agent is running ──────────────────
+                if self.streaming {
+                    {
+                        let mut mem = self.memory.write().expect("memory lock poisoned");
+                        mem.push(Message::new(Role::User, input.clone()));
+                    }
+                    self.messages.push(ChatMessage::User {
+                        content: input,
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                    self.input.clear();
+                    self.input_cursor = 0;
+                    self.auto_scroll = true;
+                    self.scroll_offset = 0;
+                    return None;
+                }
 
                 // Check for bang commands (!command — execute asynchronously)
                 if input.starts_with('!') && !input.starts_with("!!") {
@@ -288,9 +303,6 @@ impl App {
                     return self.handle_intervene_key(key);
                 }
 
-                if self.streaming {
-                    return None;
-                }
                 // On some terminals Shift+Enter sends a newline char
                 // (handled above via Enter). Plain char insertion:
                 self.input.insert(self.input_cursor, c);

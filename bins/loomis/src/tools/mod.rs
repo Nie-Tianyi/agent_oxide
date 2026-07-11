@@ -1,5 +1,6 @@
 //! Concrete tool implementations.
 
+mod ask_user_question;
 mod calculator;
 mod echo;
 mod tool_edit;
@@ -10,6 +11,7 @@ mod tool_read;
 mod tool_shell;
 mod tool_write;
 
+pub use ask_user_question::AskUserQuestionTool;
 pub use calculator::CalculatorTool;
 pub use echo::EchoTool;
 pub use tool_edit::EditTool;

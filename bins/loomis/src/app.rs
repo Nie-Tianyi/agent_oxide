@@ -14,12 +14,14 @@ use tools::ToolRegistry;
 
 use tools::SandboxConfig;
 
+use crate::hooks::ResponseRouter;
 use crate::hooks::SandboxHook;
 use crate::sandbox::audit_logger::AuditLogger;
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::ShellFilter;
 use crate::tools::{
-    CalculatorTool, EditTool, GlobTool, GrepTool, LsTool, ReadTool, ShellTool, WriteTool,
+    AskUserQuestionTool, CalculatorTool, EditTool, GlobTool, GrepTool, LsTool, ReadTool, ShellTool,
+    WriteTool,
 };
 
 /// System prompt used as the initial seed for every conversation.
@@ -93,9 +95,9 @@ pub struct AgentKit {
     pub agent_rx: mpsc::UnboundedReceiver<AgentEvent>,
     /// Clone of the sending half — for the agent handler background task.
     pub agent_tx: mpsc::UnboundedSender<AgentEvent>,
-    /// The sender that unblocks the intervention hook when the user
-    /// answers an intervention prompt.
-    pub intervention_tx: std::sync::mpsc::SyncSender<InterventionResponse>,
+    /// Routes intervention responses to the correct requester
+    /// (SandboxHook, AskUserQuestionTool, …).
+    pub response_router: Arc<ResponseRouter>,
 }
 
 /// Build a fully-wired coding agent with all channels and hooks.
@@ -118,6 +120,10 @@ pub fn build_coding_agent(
         std::process::exit(1);
     });
     let workspace = Arc::new(workspace);
+
+    // ── Shared intervention response router ───────────────────
+    // Must be created before tools — AskUserQuestionTool needs it.
+    let response_router = Arc::new(ResponseRouter::new());
 
     // ── Tool registry ────────────────────────────────────────
     let mut registry = ToolRegistry::new();
@@ -158,6 +164,11 @@ pub fn build_coding_agent(
     );
     registry.register(Arc::new(subagent_tool));
 
+    // AskUserQuestionTool — lets the LLM ask the user questions.
+    let ask_tool = AskUserQuestionTool::new(response_router.clone());
+    ask_tool.set_agent_tx(agent_tx.clone());
+    registry.register(Arc::new(ask_tool));
+
     let tool_names: Vec<String> = registry.iter().map(|(n, _)| n.to_string()).collect();
     let registry = Arc::new(registry);
 
@@ -168,8 +179,12 @@ pub fn build_coding_agent(
 
     // ── Hooks ─────────────────────────────────────────────────
     // SandboxHook — shell approval, resource tracking, audit logging
-    let (approval_hook, intervention_tx) =
-        SandboxHook::new(shell_filter, resource_tracker, audit_logger);
+    let approval_hook = SandboxHook::new(
+        shell_filter,
+        resource_tracker,
+        audit_logger,
+        response_router.clone(),
+    );
     approval_hook.set_agent_tx(agent_tx.clone());
 
     // MicroCompactHook — clears old tool output content
@@ -219,6 +234,6 @@ pub fn build_coding_agent(
         model: model.to_string(),
         agent_rx,
         agent_tx,
-        intervention_tx,
+        response_router,
     }
 }

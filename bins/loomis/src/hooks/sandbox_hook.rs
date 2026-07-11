@@ -17,7 +17,7 @@
 //! Non-shell tools pass through without checks (their sandboxing is
 //! handled by `WorkspaceFs` in the tool implementation).
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use engine::{
@@ -26,6 +26,7 @@ use engine::{
 use provider::ToolCall;
 use tokio::sync::mpsc;
 
+use crate::hooks::{ResponseRouter, next_request_id};
 use crate::sandbox::audit_logger::{AuditEntry, AuditLogger};
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::{CommandVerdict, ShellFilter};
@@ -33,9 +34,9 @@ use crate::sandbox::shell_filter::{CommandVerdict, ShellFilter};
 pub struct SandboxHook {
     /// Sends agent events to the TUI (intervention requests, etc.).
     agent_tx: OnceLock<mpsc::UnboundedSender<AgentEvent>>,
-    /// Blocking receive for the user's intervention response
-    /// (same rendez-vous pattern as the original hook).
-    intervention_rx: Mutex<std::sync::mpsc::Receiver<InterventionResponse>>,
+    /// Shared router for delivering intervention responses to the
+    /// correct requester (SandboxHook, AskUserQuestionTool, …).
+    response_router: Arc<ResponseRouter>,
     /// Compiled command policy.
     shell_filter: ShellFilter,
     /// Per-session quota tracker.
@@ -45,24 +46,21 @@ pub struct SandboxHook {
 }
 
 impl SandboxHook {
-    /// Creates the hook and returns the sender half through which the
-    /// agent handler signals the user's intervention response.
+    /// Creates the hook, sharing the given response router for
+    /// intervention prompts.
     pub fn new(
         shell_filter: ShellFilter,
         resource_tracker: Arc<ResourceTracker>,
         audit_logger: Arc<AuditLogger>,
-    ) -> (Self, std::sync::mpsc::SyncSender<InterventionResponse>) {
-        let (tx, rx) = std::sync::mpsc::sync_channel::<InterventionResponse>(0);
-        (
-            Self {
-                agent_tx: OnceLock::new(),
-                intervention_rx: Mutex::new(rx),
-                shell_filter,
-                resource_tracker,
-                audit_logger,
-            },
-            tx,
-        )
+        response_router: Arc<ResponseRouter>,
+    ) -> Self {
+        Self {
+            agent_tx: OnceLock::new(),
+            response_router,
+            shell_filter,
+            resource_tracker,
+            audit_logger,
+        }
     }
 
     /// Called by `build_coding_agent` after the agent-event channel
@@ -79,9 +77,14 @@ impl SandboxHook {
     ) -> Result<(), AgentError> {
         let request_id = next_request_id();
 
+        // Create per-request rendezvous channel and register with the
+        // response router so the TUI can deliver the answer.
+        let (tx, rx) = std::sync::mpsc::sync_channel::<InterventionResponse>(0);
+        self.response_router.register(request_id.clone(), tx);
+
         // Notify the TUI to render an interactive intervention prompt.
-        if let Some(tx) = self.agent_tx.get() {
-            let _ = tx.send(AgentEvent::InterventionRequired(InterventionRequest {
+        if let Some(agent_tx) = self.agent_tx.get() {
+            let _ = agent_tx.send(AgentEvent::InterventionRequired(InterventionRequest {
                 request_id: request_id.clone(),
                 title: "Approve shell command?".into(),
                 description: command.to_string(),
@@ -90,15 +93,11 @@ impl SandboxHook {
         }
 
         // Block until the TUI responds (with timeout to prevent deadlock).
-        let response = match self
-            .intervention_rx
-            .lock()
-            .expect("lock poisoned")
-            .recv_timeout(Duration::from_secs(120))
-        {
+        let response = match rx.recv_timeout(Duration::from_secs(120)) {
             Ok(resp) => resp,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 // Timeout — treat as deny.
+                self.response_router.unregister(&request_id);
                 InterventionResponse {
                     chosen: Some(1), // "Deny"
                     custom_text: None,
@@ -112,6 +111,9 @@ impl SandboxHook {
                 }
             }
         };
+
+        // Cleanup (no-op if the TUI's route() already removed the entry).
+        self.response_router.unregister(&request_id);
 
         match response.chosen {
             Some(0) => Ok(()), // "Approve"
@@ -289,22 +291,8 @@ impl AgentHook for SandboxHook {
     }
 }
 
-/// Generate a unique request identifier for intervention prompts.
-///
-/// Uses an atomic counter for uniqueness within a session — not a UUID v4
-/// (which would require randomness per RFC 4122), but sufficient for
-/// correlating intervention requests and responses.
-fn next_request_id() -> String {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    static COUNTER: AtomicU64 = AtomicU64::new(0);
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    format!("req-{id:016x}")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_iso8601_now_produces_correct_format() {
         let ts = memory::iso8601_now();

@@ -73,7 +73,7 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let full_lines: Vec<Line<'_>> = app
         .messages
         .iter()
-        .flat_map(|msg| message_to_lines(msg, inner.width))
+        .flat_map(|msg| message_to_lines(msg, inner.width, app.intervene_selection))
         .collect();
     let has_scrollbar = full_lines.len() > visible_height;
 
@@ -99,7 +99,7 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
     let raw_lines: Vec<Line<'_>> = app
         .messages
         .iter()
-        .flat_map(|msg| message_to_lines(msg, text_width))
+        .flat_map(|msg| message_to_lines(msg, text_width, app.intervene_selection))
         .collect();
     let all_lines = wrap_to_width(raw_lines, text_width);
     let total_lines = all_lines.len();
@@ -162,7 +162,11 @@ fn draw_chat(frame: &mut Frame, area: Rect, app: &App) {
 ///
 /// Each message gets a dim timestamp prefix on its first line. Tool calls
 /// show the tool name prominently with args/output on a separate dim line.
-fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
+fn message_to_lines(
+    msg: &ChatMessage,
+    area_width: u16,
+    intervene_selection: Option<usize>,
+) -> Vec<Line<'_>> {
     // ── Timestamp style (shared across all variants) ───────────────
     let ts_style = Style::default()
         .fg(Color::DarkGray)
@@ -517,17 +521,30 @@ fn message_to_lines(msg: &ChatMessage, area_width: u16) -> Vec<Line<'_>> {
                         Span::styled(desc_line, Style::default().fg(Color::Cyan)),
                     ]));
                 }
-                // Options
+                // Options — each on its own line, highlighted when selected.
                 if !options.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::raw("       "),
-                        Span::styled(
-                            format!("[{}]", options.join(" / ")),
-                            Style::default()
-                                .fg(Color::Yellow)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                    ]));
+                    for (i, opt) in options.iter().enumerate() {
+                        let is_selected = intervene_selection == Some(i);
+                        let (prefix, style) = if is_selected {
+                            (
+                                "  ▶ ",
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            )
+                        } else {
+                            (
+                                "    ",
+                                Style::default()
+                                    .fg(Color::DarkGray)
+                                    .add_modifier(Modifier::DIM),
+                            )
+                        };
+                        lines.push(Line::from(vec![
+                            Span::raw("       "),
+                            Span::styled(format!("{prefix}{opt}"), style),
+                        ]));
+                    }
                 }
             }
             lines
@@ -686,13 +703,17 @@ fn split_at_display_width(text: &str, max_width: usize) -> (&str, &str) {
 /// Supports multi-line input — displays all lines, with cursor
 /// highlighting on the active line.
 fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
-    let style = if app.streaming {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default().fg(Color::Cyan)
-    };
+    let has_intervene = app.has_pending_intervene();
 
-    let title = if app.streaming { " Inject " } else { " Input " };
+    let (style, title) = if has_intervene && app.intervene_text_mode {
+        (Style::default().fg(Color::Magenta), " Answer ")
+    } else if has_intervene {
+        (Style::default().fg(Color::Magenta), " Choose ")
+    } else if app.streaming {
+        (Style::default().fg(Color::Yellow), " Inject ")
+    } else {
+        (Style::default().fg(Color::Cyan), " Input ")
+    };
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -708,7 +729,27 @@ fn draw_input(frame: &mut Frame, area: Rect, app: &App) {
     let display_lines = build_input_lines(app, cursor_style);
 
     // Show a hint when the input is empty
-    let lines: Vec<Line<'_>> = if app.input.is_empty() && app.streaming {
+    let lines: Vec<Line<'_>> = if app.input.is_empty() && has_intervene && app.intervene_text_mode {
+        vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                " Type your response and press Enter. Esc to go back.",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )),
+        ]
+    } else if app.input.is_empty() && has_intervene {
+        vec![
+            Line::from(Span::raw("")),
+            Line::from(Span::styled(
+                " ↑↓ to navigate  ·  Enter to select  ·  Esc to cancel",
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            )),
+        ]
+    } else if app.input.is_empty() && app.streaming {
         vec![
             Line::from(Span::raw("")),
             Line::from(Span::styled(

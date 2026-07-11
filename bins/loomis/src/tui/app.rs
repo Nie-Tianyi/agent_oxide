@@ -72,6 +72,13 @@ pub struct App {
     /// Index of the currently highlighted option while an intervention
     /// prompt is pending. `None` when no intervention is active.
     pub intervene_selection: Option<usize>,
+    /// `true` when the user is typing custom text for an "Other…" option.
+    pub intervene_text_mode: bool,
+    /// Saved input buffer before entering custom-text mode, restored on
+    /// submit or cancel.
+    pub intervene_saved_input: String,
+    /// Saved cursor position before entering custom-text mode.
+    pub intervene_saved_cursor: usize,
 
     // ── Exit signal ──
     pub should_quit: bool,
@@ -107,6 +114,9 @@ impl App {
             thread_picker: None,
             conversation_title: None,
             intervene_selection: None,
+            intervene_text_mode: false,
+            intervene_saved_input: String::new(),
+            intervene_saved_cursor: 0,
             should_quit: false,
         }
     }

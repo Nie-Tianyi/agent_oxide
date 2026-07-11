@@ -650,7 +650,7 @@ impl App {
 impl App {
     /// Returns `true` if there is an unresponded [`ChatMessage::Intervene`]
     /// in the message list.
-    fn has_pending_intervene(&self) -> bool {
+    pub(crate) fn has_pending_intervene(&self) -> bool {
         self.messages.iter().rev().any(|msg| {
             matches!(
                 msg,
@@ -663,7 +663,19 @@ impl App {
     }
 
     /// Routes all key presses while an intervention prompt is active.
+    ///
+    /// Two sub-modes:
+    /// - **Navigation** (`intervene_text_mode == false`): ↑↓ to move
+    ///   highlight, Enter to select, Esc to cancel, first-char to jump.
+    /// - **Text input** (`intervene_text_mode == true`): typing custom
+    ///   text for the "…"-suffixed option. Enter submits, Esc goes back.
     fn handle_intervene_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        // ── Text-input sub-mode ──────────────────────────────────
+        if self.intervene_text_mode {
+            return self.handle_intervene_text_key(key);
+        }
+
+        // ── Navigation sub-mode ──────────────────────────────────
         // Lazy-init the selection to the first option.
         let (options_len, _responded) = self.intervene_state();
         if self.intervene_selection.is_none() || self.intervene_selection.unwrap() >= options_len {
@@ -701,84 +713,126 @@ impl App {
 
                 let chosen_label = options.get(sel).cloned().unwrap_or_default();
 
-                // If the chosen option ends with "…", enter text-input mode.
-                // For now, handle as approve with the label text.
-                // Future: implement proper text-input dialog.
-                let custom_text = if chosen_label.ends_with('…') {
-                    // Use the existing input buffer as the custom text source.
-                    // The user can type their response in the input area.
-                    let text = self.input.clone();
-                    self.input.clear();
-                    self.input_cursor = 0;
-                    Some(text)
-                } else {
+                if chosen_label.ends_with('…') {
+                    // Enter text-input sub-mode instead of submitting.
+                    self.enter_intervene_text_mode();
                     None
-                };
-
-                self.complete_intervene(Some(sel), custom_text)
+                } else {
+                    // Regular option — confirm immediately.
+                    self.complete_intervene(Some(sel), None)
+                }
             }
             KeyCode::Esc => {
-                // Cancel — same as deny.
+                // Cancel the intervention.
                 self.complete_intervene(None, None)
             }
             KeyCode::Char(c) => {
-                // If the selected option ends with "…", pass chars
-                // through to the input buffer for custom text entry.
-                let is_other = self.is_intervene_other_option_selected();
-                if is_other {
-                    self.input.insert(self.input_cursor, c);
-                    self.input_cursor += c.len_utf8();
-                    None
-                } else {
-                    // Quick-select by first character of each option.
-                    let c_lower = c.to_ascii_lowercase();
-                    let options: Vec<String> = self
-                        .messages
-                        .iter()
-                        .rev()
-                        .find_map(|msg| match msg {
-                            ChatMessage::Intervene {
-                                responded: false,
-                                options,
-                                ..
-                            } => Some(options.clone()),
-                            _ => None,
-                        })
-                        .unwrap_or_default();
-                    for (i, opt) in options.iter().enumerate() {
-                        if opt.to_ascii_lowercase().starts_with(c_lower) {
-                            self.intervene_selection = Some(i);
-                            // Auto-confirm on quick-select (pressing first char).
-                            let custom = if opt.ends_with('…') {
-                                Some(String::new())
-                            } else {
-                                None
-                            };
-                            return self.complete_intervene(Some(i), custom);
-                        }
+                // Navigate to the first option whose label starts with
+                // this character (case-insensitive). Does NOT auto-confirm.
+                let c_lower = c.to_ascii_lowercase();
+                let options: Vec<String> = self
+                    .messages
+                    .iter()
+                    .rev()
+                    .find_map(|msg| match msg {
+                        ChatMessage::Intervene {
+                            responded: false,
+                            options,
+                            ..
+                        } => Some(options.clone()),
+                        _ => None,
+                    })
+                    .unwrap_or_default();
+                for (i, opt) in options.iter().enumerate() {
+                    if opt.to_ascii_lowercase().starts_with(c_lower) {
+                        self.intervene_selection = Some(i);
+                        break;
                     }
-                    None
                 }
+                None
             }
             _ => None,
         }
     }
 
-    /// Returns `true` if the currently highlighted option ends with `…`.
-    fn is_intervene_other_option_selected(&self) -> bool {
-        let sel = self.intervene_selection.unwrap_or(0);
-        self.messages
-            .iter()
-            .rev()
-            .find_map(|msg| match msg {
-                ChatMessage::Intervene {
-                    responded: false,
-                    options,
-                    ..
-                } => options.get(sel).map(|o| o.ends_with('…')),
-                _ => None,
-            })
-            .unwrap_or(false)
+    /// Handles keys while the user is typing custom text for an
+    /// "Other…" option.
+    fn handle_intervene_text_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        match key.code {
+            KeyCode::Enter => {
+                // Submit the custom text and restore the original input.
+                let text = self.input.clone();
+                self.exit_intervene_text_mode();
+                let sel = self.intervene_selection.unwrap_or(0);
+                let custom = if text.is_empty() { None } else { Some(text) };
+                self.complete_intervene(Some(sel), custom)
+            }
+            KeyCode::Esc => {
+                // Cancel text mode — go back to navigation.
+                self.exit_intervene_text_mode();
+                None
+            }
+            KeyCode::Backspace => {
+                if self.input_cursor > 0 {
+                    let prev = self.prev_char_boundary();
+                    self.input.remove(prev);
+                    self.input_cursor = prev;
+                }
+                None
+            }
+            KeyCode::Delete => {
+                if self.input_cursor < self.input.len() {
+                    self.delete_at_cursor();
+                }
+                None
+            }
+            KeyCode::Left => {
+                if self.input_cursor > 0 {
+                    self.input_cursor = self.prev_char_boundary();
+                }
+                None
+            }
+            KeyCode::Right => {
+                if self.input_cursor < self.input.len() {
+                    self.input_cursor = self.next_char_boundary();
+                }
+                None
+            }
+            KeyCode::Home => {
+                self.input_cursor = 0;
+                None
+            }
+            KeyCode::End => {
+                self.input_cursor = self.input.len();
+                None
+            }
+            KeyCode::Char(c) => {
+                self.input.insert(self.input_cursor, c);
+                self.input_cursor += c.len_utf8();
+                None
+            }
+            _ => None,
+        }
+    }
+
+    /// Saves the current input buffer and enters custom-text mode for
+    /// the "Other…" option.
+    fn enter_intervene_text_mode(&mut self) {
+        self.intervene_saved_input = self.input.clone();
+        self.intervene_saved_cursor = self.input_cursor;
+        self.input.clear();
+        self.input_cursor = 0;
+        self.intervene_text_mode = true;
+    }
+
+    /// Restores the input buffer from before custom-text mode and
+    /// returns to navigation mode.
+    fn exit_intervene_text_mode(&mut self) {
+        self.input = self.intervene_saved_input.clone();
+        self.input_cursor = self.intervene_saved_cursor;
+        self.intervene_saved_input.clear();
+        self.intervene_saved_cursor = 0;
+        self.intervene_text_mode = false;
     }
 
     /// Returns `(options_len, has_been_responded)` for the pending intervention.
@@ -803,6 +857,7 @@ impl App {
         custom_text: Option<String>,
     ) -> Option<TuiCommand> {
         self.intervene_selection = None;
+        self.intervene_text_mode = false;
         let response = engine::InterventionResponse {
             chosen,
             custom_text,

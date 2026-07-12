@@ -26,7 +26,7 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 use tools::{ProgressStream, ToolError, tool};
 
-use crate::hooks::{ResponseRouter, next_request_id};
+use engine::{ResponseRouter, next_request_id};
 
 // ── Args ────────────────────────────────────────────────────────────────────
 

@@ -4,13 +4,12 @@
 //!
 //! Multiple components can need user intervention simultaneously:
 //!
-//! - [`SandboxHook`](super::SandboxHook) — shell command approval in
-//!   `before_tool_call`.
+//! - [`SandboxHook`] — shell command approval in `before_tool_call`.
 //! - [`AskUserQuestionTool`] — LLM-initiated questions during tool execution.
 //!
 //! Each requester creates its own `sync_channel(0)` pair, registers the
 //! sender under a unique [`request_id`], sends an
-//! [`InterventionRequired`](engine::AgentEvent::InterventionRequired) event,
+//! [`InterventionRequired`](crate::AgentEvent::InterventionRequired) event,
 //! and blocks on its own receiver.  The TUI's agent handler routes responses
 //! through this router instead of a single hard-coded channel.
 //!
@@ -23,7 +22,7 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use engine::InterventionResponse;
+use crate::InterventionResponse;
 
 /// Routes [`InterventionResponse`] values to the correct blocking requester.
 ///

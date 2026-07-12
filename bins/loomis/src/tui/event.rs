@@ -200,7 +200,7 @@ async fn agent_handler(
     mut cmd_rx: UnboundedReceiver<TuiCommand>,
     agent_tx: UnboundedSender<AgentEvent>,
     workspace_root: PathBuf,
-    response_router: Arc<crate::hooks::ResponseRouter>,
+    response_router: Arc<engine::ResponseRouter>,
 ) {
     let mut current_run: Option<tokio::task::JoinHandle<()>> = None;
 

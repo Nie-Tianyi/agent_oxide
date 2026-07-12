@@ -14,7 +14,6 @@ use tools::ToolRegistry;
 
 use tools::SandboxConfig;
 
-use crate::hooks::ResponseRouter;
 use crate::hooks::SandboxHook;
 use crate::sandbox::audit_logger::AuditLogger;
 use crate::sandbox::resource_tracker::ResourceTracker;
@@ -23,6 +22,7 @@ use crate::tools::{
     AskUserQuestionTool, CalculatorTool, EditTool, GlobTool, GrepTool, LsTool, ReadTool, ShellTool,
     WriteTool,
 };
+use engine::ResponseRouter;
 
 /// System prompt used as the initial seed for every conversation.
 pub const SYSTEM_PROMPT: &str = "\

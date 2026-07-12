@@ -26,10 +26,10 @@ use engine::{
 use provider::ToolCall;
 use tokio::sync::mpsc;
 
-use crate::hooks::{ResponseRouter, next_request_id};
 use crate::sandbox::audit_logger::{AuditEntry, AuditLogger};
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::{CommandVerdict, ShellFilter};
+use engine::{ResponseRouter, next_request_id};
 
 pub struct SandboxHook {
     /// Sends agent events to the TUI (intervention requests, etc.).

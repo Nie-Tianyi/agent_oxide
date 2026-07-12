@@ -728,7 +728,7 @@ impl<C: LLMClient> Agent<C> {
                 .await
                 {
                     Ok(Some(result)) => result,
-                    Ok(None) => break,          // stream exhausted normally
+                    Ok(None) => break, // stream exhausted normally
                     Err(_elapsed) => {
                         return self.fail_run(AgentError::StreamTimeout, &tx);
                     }

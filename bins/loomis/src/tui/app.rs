@@ -263,6 +263,9 @@ impl App {
                     custom_text: None,
                     timestamp: ChatMessage::now_timestamp(),
                 });
+                // Default-select the first option so it renders highlighted
+                // immediately, before the user presses any key.
+                self.intervene_selection = Some(0);
             }
 
             // ── Terminal sentinel ────────────────────────────────────

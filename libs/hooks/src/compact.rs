@@ -508,10 +508,7 @@ mod tests {
             &self,
             _req: CompletionRequest,
         ) -> Result<
-            futures_util::stream::BoxStream<
-                'static,
-                Result<provider::StreamChunk, ProviderError>,
-            >,
+            futures_util::stream::BoxStream<'static, Result<provider::StreamChunk, ProviderError>>,
             ProviderError,
         > {
             panic!("MacroCompactHook should not call stream when last_usage is None");
@@ -534,5 +531,4 @@ mod tests {
         // Should have returned early — memory is still empty.
         assert!(mem.read().unwrap().messages.is_empty());
     }
-
 }

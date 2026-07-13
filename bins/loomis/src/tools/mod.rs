@@ -15,7 +15,7 @@ mod tool_write;
 pub use ask_user_question::AskUserQuestionTool;
 pub use calculator::CalculatorTool;
 pub use echo::EchoTool;
-pub use todo::{TodoItem, TodoTool, TODO_MARKER};
+pub use todo::{TODO_MARKER, TodoItem, TodoTool};
 pub use tool_edit::EditTool;
 pub use tool_glob::GlobTool;
 pub use tool_grep::GrepTool;

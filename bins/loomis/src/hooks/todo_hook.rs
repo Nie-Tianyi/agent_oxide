@@ -16,7 +16,7 @@ use engine::AgentHook;
 use memory::SharedMemory;
 use provider::{Message, Role};
 
-use crate::tools::{TodoItem, TODO_MARKER};
+use crate::tools::{TODO_MARKER, TodoItem};
 
 // ── TodoListHook ─────────────────────────────────────────────────────────────
 
@@ -68,9 +68,8 @@ impl AgentHook for TodoListHook {
 
         // Find and remove any existing [TODO] System message(s), then
         // insert a single one at index 0 if the list is non-empty.
-        mem.messages.retain(|m| {
-            !(m.role == Role::System && m.content.starts_with(TODO_MARKER))
-        });
+        mem.messages
+            .retain(|m| !(m.role == Role::System && m.content.starts_with(TODO_MARKER)));
 
         if let Some(c) = content {
             mem.messages.insert(0, Message::new(Role::System, c));
@@ -103,10 +102,7 @@ mod tests {
 
     #[test]
     fn test_inserts_todo_system_message_when_list_non_empty() {
-        let state = make_state(vec![
-            make_item(1, "pending"),
-            make_item(2, "in_progress"),
-        ]);
+        let state = make_state(vec![make_item(1, "pending"), make_item(2, "in_progress")]);
         let memory = make_memory();
         let hook = TodoListHook::new(state);
 
@@ -146,7 +142,10 @@ mod tests {
             .iter()
             .filter(|m| m.role == Role::System && m.content.starts_with(TODO_MARKER))
             .count();
-        assert_eq!(todo_count, 0, "expected [TODO] message to be removed when list is empty");
+        assert_eq!(
+            todo_count, 0,
+            "expected [TODO] message to be removed when list is empty"
+        );
     }
 
     #[test]
@@ -172,7 +171,10 @@ mod tests {
             .iter()
             .filter(|m| m.role == Role::System && m.content.starts_with(TODO_MARKER))
             .count();
-        assert_eq!(todo_count, 1, "should still have exactly one [TODO] message");
+        assert_eq!(
+            todo_count, 1,
+            "should still have exactly one [TODO] message"
+        );
 
         let todo_msg = mem
             .messages

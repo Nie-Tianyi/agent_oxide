@@ -33,7 +33,9 @@ pub struct TodoItem {
     pub content: String,
 
     /// Current status: "pending", "in_progress", or "completed".
-    #[schemars(description = "Current status. One of: \"pending\", \"in_progress\", \"completed\".")]
+    #[schemars(
+        description = "Current status. One of: \"pending\", \"in_progress\", \"completed\"."
+    )]
     pub status: String,
 
     /// Present-tense label shown while the task is in progress (e.g. "Implementing TodoTool").
@@ -151,9 +153,10 @@ impl TodoTool {
 
         // ── Update shared state (for TUI and TodoListHook) ──────────
         {
-            let mut state = self.state.write().map_err(|e| {
-                ToolError::Execution(format!("todo state lock poisoned: {e}"))
-            })?;
+            let mut state = self
+                .state
+                .write()
+                .map_err(|e| ToolError::Execution(format!("todo state lock poisoned: {e}")))?;
             *state = args.todos.clone();
         }
 
@@ -266,9 +269,7 @@ mod tests {
             {"content": "task 3", "status": "pending", "active_form": "Doing task 3"}
         ]}"#;
 
-        let result = Tool::execute_stream(&tool, input)
-            .unwrap()
-            .poll_done();
+        let result = Tool::execute_stream(&tool, input).unwrap().poll_done();
 
         assert!(result.contains("3 todos"));
         assert!(result.contains("completed"));

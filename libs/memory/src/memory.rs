@@ -6,13 +6,16 @@
 
 use std::sync::{Arc, RwLock};
 
-use provider::Message;
+use provider::{Message, Usage};
 
 // ── Memory ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
 pub struct Memory {
     pub messages: Vec<Message>,
+    /// Token usage from the most recent LLM response.
+    /// `None` until the first LLM call completes.
+    pub last_usage: Option<Usage>,
 }
 
 pub type SharedMemory = Arc<RwLock<Memory>>;
@@ -56,6 +59,7 @@ impl MemoryBuilder {
     pub fn build(self) -> Memory {
         Memory {
             messages: self.messages,
+            last_usage: None,
         }
     }
 }
@@ -66,12 +70,14 @@ impl Memory {
     pub fn new() -> Self {
         Self {
             messages: Vec::new(),
+            last_usage: None,
         }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             messages: Vec::with_capacity(cap),
+            last_usage: None,
         }
     }
 
@@ -90,7 +96,10 @@ impl Default for Memory {
 
 impl From<Vec<Message>> for Memory {
     fn from(messages: Vec<Message>) -> Self {
-        Self { messages }
+        Self {
+            messages,
+            last_usage: None,
+        }
     }
 }
 
@@ -198,5 +207,38 @@ mod tests {
         mem.push(user_msg("a"));
         assert!(!mem.is_empty());
         assert_eq!(mem.len(), 1);
+    }
+
+    #[test]
+    fn test_last_usage_defaults_to_none() {
+        let mem = Memory::new();
+        assert!(mem.last_usage.is_none());
+    }
+
+    #[test]
+    fn test_set_last_usage() {
+        let mut mem = Memory::new();
+        let usage = Usage {
+            prompt_tokens: 100,
+            completion_tokens: 50,
+            total_tokens: 150,
+        };
+        mem.last_usage = Some(usage);
+        assert_eq!(mem.last_usage.as_ref().unwrap().prompt_tokens, 100);
+        assert_eq!(mem.last_usage.as_ref().unwrap().completion_tokens, 50);
+        assert_eq!(mem.last_usage.as_ref().unwrap().total_tokens, 150);
+    }
+
+    #[test]
+    fn test_from_vec_has_last_usage_none() {
+        let msgs = vec![user_msg("a")];
+        let mem = Memory::from(msgs);
+        assert!(mem.last_usage.is_none());
+    }
+
+    #[test]
+    fn test_builder_has_last_usage_none() {
+        let mem = Memory::builder().build();
+        assert!(mem.last_usage.is_none());
     }
 }

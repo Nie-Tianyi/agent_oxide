@@ -510,6 +510,7 @@ name = "hooks"
 version = "0.1.0"
 dependencies = [
  "engine",
+ "futures-util",
  "memory",
  "provider",
  "serde_json",

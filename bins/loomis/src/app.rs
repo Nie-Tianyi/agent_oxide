@@ -155,7 +155,7 @@ pub fn build_coding_agent(
     // Blocks the agent task via Handle::block_on (separate thread from TUI).
     let macro_compact = hooks::MacroCompactHook::new(
         flash_model.to_string(),
-        hooks::DEFAULT_COMPACT_CHAR_LIMIT,
+        hooks::DEFAULT_COMPACT_TOKEN_LIMIT,
         hooks::DEFAULT_KEEP_LAST_N,
         compact_client,
     );

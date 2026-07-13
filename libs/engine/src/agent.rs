@@ -13,7 +13,7 @@ use tokio::sync::mpsc;
 use memory::SharedMemory;
 use provider::{
     CompletionRequest, CompletionResponse, FinishReason, LLMClient, Message, ProviderError, Role,
-    StreamChunk, ToolCall, ToolCallFunction, ToolCallKind,
+    StreamChunk, ToolCall, ToolCallFunction, ToolCallKind, Usage,
 };
 use tools::{Progress, ToolError, ToolRegistry};
 
@@ -746,9 +746,20 @@ impl<C: LLMClient> Agent<C> {
                 }
             }
 
+            // ── Capture token usage before consuming the accumulator ──
+            let last_usage = acc.usage.take();
+
             // ── Materialize the full assistant message from accumulated
             //    deltas, then notify hooks.
             let (assistant_msg, finish_reason) = acc.into_assistant_message();
+
+            // ── Write usage to memory so hooks (e.g. MacroCompact) can
+            //    read the exact prompt-token count in the next on_llm_start.
+            {
+                let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                mem.last_usage = last_usage;
+            }
+
             for hook in &self.ctx.hooks {
                 hook.on_llm_end("default", &assistant_msg);
             }
@@ -832,6 +843,9 @@ impl<C: LLMClient> Agent<C> {
                 Err(e) => return self.fail_run(e, &tx),
             };
 
+            // ── Capture token usage before consuming `response.choices` ──
+            let last_usage = response.usage.clone();
+
             let choice = match response.choices.into_iter().next() {
                 Some(c) => c,
                 None => return self.fail_run(AgentError::NoChoices, &tx),
@@ -850,6 +864,13 @@ impl<C: LLMClient> Agent<C> {
                 tool_call_id: None,
                 name: None,
             };
+
+            // ── Write usage to memory so hooks can read prompt_tokens
+            //    in the next on_llm_start invocation.
+            {
+                let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                mem.last_usage = last_usage;
+            }
 
             for hook in &self.ctx.hooks {
                 hook.on_llm_end("default", &msg);
@@ -944,6 +965,9 @@ struct StreamAccumulator {
     /// The `finish_reason` from the terminal chunk; `None` until the
     /// final chunk arrives.
     finish_reason: Option<FinishReason>,
+    /// Token usage from the terminal chunk (present only in the final
+    /// SSE event alongside the non-null `finish_reason`).
+    usage: Option<Usage>,
 }
 
 /// Buffers incremental fields for a single tool call during streaming.
@@ -964,6 +988,7 @@ impl StreamAccumulator {
             reasoning: String::new(),
             tool_calls: BTreeMap::new(),
             finish_reason: None,
+            usage: None,
         }
     }
 
@@ -1024,6 +1049,11 @@ impl StreamAccumulator {
             if let Some(ref fr) = choice.finish_reason {
                 self.finish_reason = Some(fr.clone());
             }
+        }
+        // Capture usage from the terminal chunk (present only in the final
+        // SSE event alongside the non-null `finish_reason`).
+        if let Some(ref u) = chunk.usage {
+            self.usage = Some(u.clone());
         }
     }
 
@@ -1347,6 +1377,30 @@ mod tests {
         assert_eq!(msg.content, "Hello");
         assert!(msg.tool_calls.is_none());
         assert!(finish_reason.is_none());
+    }
+
+    #[test]
+    fn test_stream_accumulator_captures_usage() {
+        let mut acc = StreamAccumulator::new();
+
+        // Intermediate chunk — usage is null
+        let chunk1: StreamChunk = serde_json::from_str(
+            r#"{"id":"1","object":"c","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"Hello"},"finish_reason":null}],"usage":null}"#,
+        )
+        .unwrap();
+        acc.ingest(&chunk1);
+        assert!(acc.usage.is_none());
+
+        // Final chunk — carries usage alongside finish_reason
+        let chunk2: StreamChunk = serde_json::from_str(
+            r#"{"id":"1","object":"c","created":1,"model":"m","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":297,"completion_tokens":48,"total_tokens":345}}"#,
+        )
+        .unwrap();
+        acc.ingest(&chunk2);
+        let usage = acc.usage.as_ref().unwrap();
+        assert_eq!(usage.prompt_tokens, 297);
+        assert_eq!(usage.completion_tokens, 48);
+        assert_eq!(usage.total_tokens, 345);
     }
 
     #[test]

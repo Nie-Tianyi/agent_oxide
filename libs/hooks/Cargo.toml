@@ -10,3 +10,6 @@ memory = { path = "../memory" }
 engine = { path = "../engine" }
 tokio = { workspace = true }
 serde_json = { workspace = true }
+
+[dev-dependencies]
+futures-util = { workspace = true }

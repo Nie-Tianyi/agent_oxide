@@ -6,7 +6,7 @@
 //!   content in-place during `on_llm_start`.
 //!
 //! - [`MacroCompactConfig`] — configuration for full LLM summarisation.
-//!   The agent loop calls out to a cheap model when the character budget
+//!   The agent loop calls out to a cheap model when the token budget
 //!   is exceeded, draining old non-System messages and inserting a summary
 //!   as a new System message.
 
@@ -32,6 +32,11 @@ pub const DEFAULT_COMPACT_ELIGIBLE_TOOLS: &[&str] =
 
 /// Default character budget before macro-compaction triggers.
 pub const DEFAULT_COMPACT_CHAR_LIMIT: usize = 2_000_000;
+
+/// Default token budget before macro-compaction triggers.
+/// 1M tokens — conservative for modern 1M+ context windows,
+/// leaving ample headroom for completion tokens.
+pub const DEFAULT_COMPACT_TOKEN_LIMIT: usize = 1_000_000;
 
 /// Default number of non-System messages preserved during macro-compaction drain.
 pub const DEFAULT_KEEP_LAST_N: usize = 10;
@@ -92,10 +97,11 @@ impl AgentHook for MicroCompactHook {
 
 /// Full LLM summarisation hook.
 ///
-/// Implements [`AgentHook`] — in `on_llm_start`, checks whether the conversation
-/// exceeds `threshold` characters.  If it does, drains old non-System messages
-/// (keeping the most recent `keep_last_n`), calls the compact model for a
-/// summary, and inserts it as a System message.
+/// Implements [`AgentHook`] — in `on_llm_start`, checks whether the
+/// conversation's `prompt_tokens` (from the previous LLM response, stored
+/// on [`Memory::last_usage`]) exceeds `threshold` tokens.  If it does,
+/// drains old non-System messages (keeping the most recent `keep_last_n`),
+/// calls the compact model for a summary, and inserts it as a System message.
 ///
 /// The LLM call blocks the agent loop via
 /// [`tokio::runtime::Handle::block_on`].  This is safe because the agent loop
@@ -104,7 +110,8 @@ impl AgentHook for MicroCompactHook {
 pub struct MacroCompactHook<C: LLMClient> {
     /// Model name for summarisation (cheap model).
     pub compact_model: String,
-    /// Character budget before compaction triggers.
+    /// Token budget before compaction triggers (compared against
+    /// `prompt_tokens` from the previous LLM response).
     pub threshold: usize,
     /// Number of non-System messages to preserve during drain.
     pub keep_last_n: usize,
@@ -131,7 +138,15 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
     fn on_llm_start(&self, _session_id: &str, memory: &SharedMemory) {
         let needs = {
             let mem = memory.read().expect("memory lock poisoned");
-            mem.total_chars() > self.threshold
+            match &mem.last_usage {
+                Some(usage) => usage.prompt_tokens as usize > self.threshold,
+                None => {
+                    // No usage data yet (first LLM call of the session).
+                    // Skip compaction — after this call completes,
+                    // `last_usage` will be populated for the next check.
+                    false
+                }
+            }
         };
         if !needs {
             return;
@@ -469,4 +484,55 @@ mod tests {
                 .contains("summariser failed")
         );
     }
+
+    // ── MacroCompactHook token-based threshold tests ──────────────────────
+
+    use memory::Memory;
+    use provider::{CompletionRequest, CompletionResponse, LLMClient, ProviderError};
+    use std::sync::Arc;
+
+    /// A mock LLM client that panics if called — used to verify that
+    /// `MacroCompactHook::on_llm_start` returns early when `last_usage` is
+    /// `None`, without ever invoking the LLM client.
+    struct PanicClient;
+
+    impl LLMClient for PanicClient {
+        async fn generate(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<CompletionResponse, ProviderError> {
+            panic!("MacroCompactHook should not call generate when last_usage is None");
+        }
+
+        async fn stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<
+                'static,
+                Result<provider::StreamChunk, ProviderError>,
+            >,
+            ProviderError,
+        > {
+            panic!("MacroCompactHook should not call stream when last_usage is None");
+        }
+    }
+
+    #[test]
+    fn test_macro_compact_skips_when_no_usage() {
+        // When `last_usage` is `None` (first LLM call), compaction should
+        // be skipped entirely — no LLM call, no messages modified.
+        let hook: MacroCompactHook<PanicClient> = MacroCompactHook::new(
+            "test-model".into(),
+            10, // very low threshold — would trigger if checked
+            5,
+            PanicClient,
+        );
+        let mem: SharedMemory = Arc::new(std::sync::RwLock::new(Memory::new()));
+        // mem.last_usage is None by default
+        hook.on_llm_start("test-session", &mem);
+        // Should have returned early — memory is still empty.
+        assert!(mem.read().unwrap().messages.is_empty());
+    }
+
 }

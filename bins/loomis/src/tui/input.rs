@@ -24,6 +24,11 @@ impl App {
             return self.handle_thread_picker_key(key);
         }
 
+        // ── Debug overlay intercepts most keys ──────────────────
+        if self.debug_overlay.visible {
+            return self.handle_debug_overlay_key(key);
+        }
+
         // ── Intervention prompt intercepts most keys ────────────
         if self.has_pending_intervene() {
             return self.handle_intervene_key(key);
@@ -142,6 +147,14 @@ impl App {
                 }
                 // Otherwise: delete forward
                 self.delete_at_cursor();
+                None
+            }
+
+            KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.debug_overlay.visible = !self.debug_overlay.visible;
+                if self.debug_overlay.visible {
+                    self.debug_overlay.sync(&self.trace_store);
+                }
                 None
             }
 
@@ -460,6 +473,8 @@ impl App {
                     "  /threads       — open thread picker",
                     "  /stats         — memory statistics",
                     "  /tools         — list registered tools",
+                    "  /debug         — toggle trace debug overlay",
+                    "  /trace-save    — export trace events to JSONL file",
                     "  /help          — show this message",
                     "",
                     "Shell prefix:",
@@ -473,6 +488,7 @@ impl App {
                     "  PgUp/PgDown/🖱 — scroll chat",
                     "  Up/Down      — input history / multi-line nav",
                     "  Ctrl+C       — cancel generation / exit",
+                    "  Ctrl+O       — toggle trace debug overlay",
                     "  Esc          — cancel generation",
                     "  Y / n        — approve / deny shell command",
                 ]
@@ -481,6 +497,69 @@ impl App {
                     content,
                     timestamp: ChatMessage::now_timestamp(),
                 });
+                Some(None)
+            }
+
+            "/debug" => {
+                self.debug_overlay.visible = !self.debug_overlay.visible;
+                if self.debug_overlay.visible {
+                    self.debug_overlay.sync(&self.trace_store);
+                    self.messages.push(ChatMessage::System {
+                        content: "Debug trace overlay opened. Use ↑↓ to scroll, Esc to close."
+                            .into(),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                } else {
+                    self.messages.push(ChatMessage::System {
+                        content: "Debug trace overlay closed.".into(),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                }
+                Some(None)
+            }
+
+            "/trace-save" => {
+                let traces_dir = self
+                    .workspace_root
+                    .join(&self.persistence_config.threads_dir)
+                    .parent()
+                    .map(|p| p.join("traces"))
+                    .unwrap_or_else(|| self.workspace_root.join(".loomis").join("traces"));
+                // Ensure directory exists.
+                let _ = std::fs::create_dir_all(&traces_dir);
+                let filename = format!(
+                    "trace_{}.jsonl",
+                    memory::iso8601_now()
+                );
+                let path = traces_dir.join(&filename);
+                match std::fs::File::create(&path) {
+                    Ok(file) => {
+                        let mut writer = std::io::BufWriter::new(file);
+                        match self.trace_store.export_jsonl(&mut writer) {
+                            Ok(count) => {
+                                self.messages.push(ChatMessage::System {
+                                    content: format!(
+                                        "Trace saved: {count} events → {}",
+                                        path.display()
+                                    ),
+                                    timestamp: ChatMessage::now_timestamp(),
+                                });
+                            }
+                            Err(e) => {
+                                self.messages.push(ChatMessage::Error {
+                                    content: format!("Failed to export trace: {e}"),
+                                    timestamp: ChatMessage::now_timestamp(),
+                                });
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        self.messages.push(ChatMessage::Error {
+                            content: format!("Failed to create trace file: {e}"),
+                            timestamp: ChatMessage::now_timestamp(),
+                        });
+                    }
+                }
                 Some(None)
             }
 
@@ -519,6 +598,43 @@ impl App {
                 if picker.selected + 1 < picker.threads.len() {
                     picker.selected += 1;
                 }
+                None
+            }
+            _ => None, // swallow all other keys
+        }
+    }
+
+    // ── Debug Overlay ───────────────────────────────────────────────────────────
+
+    /// Handles keyboard input while the debug trace overlay is active.
+    ///
+    /// `Esc` closes, `↑↓` scrolls, `PgUp/PgDown` scrolls by page.
+    fn handle_debug_overlay_key(&mut self, key: KeyEvent) -> Option<TuiCommand> {
+        match key.code {
+            KeyCode::Esc => {
+                self.debug_overlay.visible = false;
+                None
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.debug_overlay.scroll_up(1);
+                None
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                self.debug_overlay.scroll_down(1);
+                None
+            }
+            KeyCode::PageUp => {
+                self.debug_overlay.scroll_up(10);
+                None
+            }
+            KeyCode::PageDown => {
+                self.debug_overlay.scroll_down(10);
+                None
+            }
+            KeyCode::Char('o')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
+                self.debug_overlay.visible = false;
                 None
             }
             _ => None, // swallow all other keys

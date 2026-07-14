@@ -7,13 +7,14 @@ use deepseek::DeepSeekClient;
 use engine::{Agent, EngineContext};
 use hooks;
 use memory::{Memory, PendingHints, PersistenceConfig, SharedMemory};
+use observability::TraceStore;
 use subagent::{self, SubagentConfig};
 use tokio::sync::mpsc;
 use tools::ToolRegistry;
 
 use tools::SandboxConfig;
 
-use crate::hooks::{PersistenceHook, SandboxHook, SystemPromptHook, TodoListHook};
+use crate::hooks::{ObservabilityHook, PersistenceHook, SandboxHook, SystemPromptHook, TodoListHook};
 use crate::sandbox::audit_logger::AuditLogger;
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::ShellFilter;
@@ -49,6 +50,8 @@ pub struct AgentKit {
     pub persistence_config: PersistenceConfig,
     /// Shared todo list state — written by [`TodoTool`], read by the TUI status bar.
     pub todos: Arc<RwLock<Vec<TodoItem>>>,
+    /// Shared trace store — written by [`ObservabilityHook`], read by the TUI.
+    pub trace_store: Arc<TraceStore>,
 }
 
 /// Build a fully-wired coding agent with all channels and hooks.
@@ -103,6 +106,9 @@ pub fn build_coding_agent(
     // ── Memory ───────────────────────────────────────────────
     let memory: SharedMemory = Arc::new(std::sync::RwLock::new(Memory::new()));
 
+    // ── Trace store (observability) ──────────────────────────
+    let trace_store = Arc::new(TraceStore::new());
+
     // ── LLM Clients ─────────────────────────────────────────────
     let client = DeepSeekClient::new(api_key);
     let subagent_client = client.clone(); // clone before client is moved into EngineContext
@@ -122,7 +128,8 @@ pub fn build_coding_agent(
         subagent_config,
         subagent_registry,
         memory.clone(),
-    );
+    )
+    .with_trace_store(trace_store.clone());
     registry.register(Arc::new(subagent_tool));
 
     // AskUserQuestionTool — lets the LLM ask the user questions.
@@ -143,6 +150,10 @@ pub fn build_coding_agent(
     let audit_logger = Arc::new(AuditLogger::new(sandbox_config, workspace_root));
 
     // ── Hooks ─────────────────────────────────────────────────
+
+    // ObservabilityHook — full-chain trace event collection.
+    let observability_hook = ObservabilityHook::new(trace_store.clone(), memory.clone());
+
     // SandboxHook — shell approval, resource tracking, audit logging
     let approval_hook = SandboxHook::new(
         shell_filter,
@@ -187,11 +198,12 @@ pub fn build_coding_agent(
 
     let hooks: Vec<Box<dyn engine::AgentHook>> = vec![
         Box::new(system_prompt_hook), // 0. Seed system prompts on run start
-        Box::new(persistence_hook),   // 1. Save conversation after each run
-        Box::new(todo_list_hook),     // 2. Maintain [TODO] System message
-        Box::new(macro_compact),      // 3. LLM summarisation
-        Box::new(micro_compact),      // 4. Tool output clearing
-        Box::new(approval_hook),      // 5. Security sandbox
+        Box::new(observability_hook), // 1. Full-chain trace event collection
+        Box::new(persistence_hook),   // 2. Save conversation after each run
+        Box::new(todo_list_hook),     // 3. Maintain [TODO] System message
+        Box::new(macro_compact),      // 4. LLM summarisation
+        Box::new(micro_compact),      // 5. Tool output clearing
+        Box::new(approval_hook),      // 6. Security sandbox
     ];
 
     // ── Engine context (via builder) ─────────────────────────
@@ -216,5 +228,6 @@ pub fn build_coding_agent(
         pending_hints,
         persistence_config,
         todos: todo_state,
+        trace_store,
     }
 }

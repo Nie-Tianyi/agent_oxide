@@ -765,6 +765,9 @@ impl<C: LLMClient> Agent<C> {
             //    read the exact prompt-token count in the next on_llm_start.
             {
                 let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                if let Some(ref u) = last_usage {
+                    mem.usage_history.push(u.clone());
+                }
                 mem.last_usage = last_usage;
             }
 
@@ -877,6 +880,9 @@ impl<C: LLMClient> Agent<C> {
             //    in the next on_llm_start invocation.
             {
                 let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                if let Some(ref u) = last_usage {
+                    mem.usage_history.push(u.clone());
+                }
                 mem.last_usage = last_usage;
             }
 

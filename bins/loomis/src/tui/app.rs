@@ -16,6 +16,7 @@ use std::sync::{Arc, RwLock};
 
 use engine::{AgentEvent, CallOrigin};
 use memory::{PendingHints, PersistenceConfig, SharedMemory};
+use observability::TraceStore;
 
 use super::messages::{ChatMessage, ToolCallState};
 use crate::tools::TodoItem;
@@ -92,6 +93,12 @@ pub struct App {
 
     // ── Persistence ──
     pub persistence_config: PersistenceConfig,
+
+    // ── Observability ──
+    /// Shared trace store — written by [`ObservabilityHook`], read by TUI each frame.
+    pub trace_store: Arc<TraceStore>,
+    /// Debug overlay showing recent trace events.
+    pub debug_overlay: super::debug::DebugOverlay,
 }
 
 impl App {
@@ -104,6 +111,7 @@ impl App {
         workspace_root: PathBuf,
         pending_hints: PendingHints,
         persistence_config: PersistenceConfig,
+        trace_store: Arc<TraceStore>,
     ) -> Self {
         let model = model.into();
         Self {
@@ -134,7 +142,19 @@ impl App {
             intervene_saved_cursor: 0,
             should_quit: false,
             persistence_config,
+            trace_store,
+            debug_overlay: super::debug::DebugOverlay::new(),
         }
+    }
+}
+
+// ── Trace Sync ────────────────────────────────────────────────────────────────────
+
+impl App {
+    /// Sync trace events from the store into the debug overlay.
+    /// Called once per render frame from the TUI event loop.
+    pub fn sync_trace(&mut self) {
+        self.debug_overlay.sync(&self.trace_store);
     }
 }
 
@@ -339,6 +359,7 @@ mod tests {
         let memory = std::sync::Arc::new(std::sync::RwLock::new(memory::Memory::new()));
         let pending_hints = PendingHints::default();
         let todos = Arc::new(RwLock::new(Vec::<TodoItem>::new()));
+        let trace_store = Arc::new(TraceStore::new());
         App::new(
             "test-model",
             memory,
@@ -347,6 +368,7 @@ mod tests {
             PathBuf::from("."),
             pending_hints,
             PersistenceConfig::default(),
+            trace_store,
         )
     }
 

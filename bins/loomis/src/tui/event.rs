@@ -53,6 +53,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         pending_hints,
         persistence_config,
         todos,
+        trace_store,
     } = kit;
 
     // ── Create command channel ────────────────────────────────────
@@ -98,6 +99,7 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         workspace_root,
         pending_hints,
         persistence_config,
+        trace_store,
     );
 
     // ── Event loop ───────────────────────────────────────────────────
@@ -132,6 +134,9 @@ fn run_event_loop(
     let mut pending_events: Vec<AgentEvent> = Vec::new();
 
     loop {
+        // ── Sync trace events ────────────────────────────────────────
+        app.sync_trace();
+
         // ── Render ───────────────────────────────────────────────────
         terminal.draw(|frame| super::ui::draw(frame, app))?;
 

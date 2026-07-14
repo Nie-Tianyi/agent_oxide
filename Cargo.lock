@@ -900,6 +900,7 @@ dependencies = [
  "glob",
  "hooks",
  "memory",
+ "observability",
  "provider",
  "pulldown-cmark",
  "ratatui",
@@ -962,6 +963,15 @@ dependencies = [
  "log",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "observability"
+version = "0.1.0"
+dependencies = [
+ "provider",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1699,6 +1709,7 @@ dependencies = [
  "engine",
  "futures-util",
  "memory",
+ "observability",
  "provider",
  "schemars",
  "serde",

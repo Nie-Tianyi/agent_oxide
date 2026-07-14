@@ -9,6 +9,7 @@ provider = { path = "../provider" }
 tools = { path = "../tools" }
 engine = { path = "../engine" }
 memory = { path = "../memory" }
+observability = { path = "../observability" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

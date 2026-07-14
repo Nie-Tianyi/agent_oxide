@@ -16,6 +16,9 @@ pub struct Memory {
     /// Token usage from the most recent LLM response.
     /// `None` until the first LLM call completes.
     pub last_usage: Option<Usage>,
+    /// Per-call token usage history, appended alongside `last_usage`.
+    /// Used for trace persistence and cumulative metrics.
+    pub usage_history: Vec<Usage>,
 }
 
 pub type SharedMemory = Arc<RwLock<Memory>>;
@@ -60,6 +63,7 @@ impl MemoryBuilder {
         Memory {
             messages: self.messages,
             last_usage: None,
+            usage_history: Vec::new(),
         }
     }
 }
@@ -71,6 +75,7 @@ impl Memory {
         Self {
             messages: Vec::new(),
             last_usage: None,
+            usage_history: Vec::new(),
         }
     }
 
@@ -78,6 +83,7 @@ impl Memory {
         Self {
             messages: Vec::with_capacity(cap),
             last_usage: None,
+            usage_history: Vec::new(),
         }
     }
 
@@ -99,6 +105,7 @@ impl From<Vec<Message>> for Memory {
         Self {
             messages,
             last_usage: None,
+            usage_history: Vec::new(),
         }
     }
 }

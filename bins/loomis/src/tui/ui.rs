@@ -44,6 +44,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_thread_picker(frame, area, picker);
     }
 
+    // ── Debug Trace Overlay ────────────────────────────────────
+    if app.debug_overlay.visible {
+        super::debug::draw_debug_overlay(frame, area, &app.debug_overlay);
+    }
+
     // Place the hardware cursor inside the input area.
     // Account for multi-line input (vertical offset) and CJK width.
     frame.set_cursor_position((
@@ -1002,7 +1007,21 @@ fn build_status_content(app: &App) -> (String, String, String) {
             .unwrap_or_default()
     };
 
-    let left = format!(" {todo_part}{} | {} msgs ", model, msgs);
+    // Build trace metrics snippet (only shown when a run has started).
+    let trace_part = {
+        let m = &app.trace_store.metrics;
+        if m.run_started.load(std::sync::atomic::Ordering::Relaxed) {
+            let steps = m.steps();
+            let llm = m.llm_calls();
+            let tools = m.tool_calls();
+            let tokens = format_tokens(m.total_tokens());
+            format!("#{steps} · {llm} LLM · {tools} tools · {tokens} | ")
+        } else {
+            String::new()
+        }
+    };
+
+    let left = format!(" {todo_part}{trace_part}{model} | {msgs} msgs ");
 
     let (accent, right) = if app.streaming {
         let indicator = " ⚡ STREAMING ";
@@ -1028,6 +1047,17 @@ fn build_status_content(app: &App) -> (String, String, String) {
     };
 
     (left, accent, right)
+}
+
+/// Formats token count with a human-readable suffix (e.g., "1.2K").
+fn format_tokens(n: u32) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
 }
 
 // ── Line Count Estimation ────────────────────────────────────────────────────────

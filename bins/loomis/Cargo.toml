@@ -20,6 +20,7 @@ memory = { path = "../../libs/memory" }
 engine = { path = "../../libs/engine" }
 hooks = { path = "../../libs/hooks" }
 subagent = { path = "../../libs/subagent" }
+observability = { path = "../../libs/observability" }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

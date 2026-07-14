@@ -6,9 +6,11 @@
 //! [`ProgressStream`].
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use engine::{Agent, EngineContext};
 use memory::{Memory, SharedMemory};
+use observability::{TraceEvent, TraceStore};
 use provider::{LLMClient, Message, Role};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -40,6 +42,9 @@ pub struct SubagentTool<C: LLMClient + Clone + 'static> {
     config: SubagentConfig,
     subagent_tools: Arc<ToolRegistry>,
     parent_memory: SharedMemory,
+    /// Optional trace store — when set, subagent runs emit
+    /// [`TraceEvent::SubagentFinished`] on completion.
+    trace_store: Option<Arc<TraceStore>>,
 }
 
 impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
@@ -65,7 +70,14 @@ impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
             config,
             subagent_tools,
             parent_memory,
+            trace_store: None,
         }
+    }
+
+    /// Attach a trace store for subagent observability.
+    pub fn with_trace_store(mut self, store: Arc<TraceStore>) -> Self {
+        self.trace_store = Some(store);
+        self
     }
 }
 
@@ -93,6 +105,7 @@ impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
         let config = self.config.clone();
         let subagent_tools = Arc::clone(&self.subagent_tools);
         let parent_memory = Arc::clone(&self.parent_memory);
+        let trace_store = self.trace_store.clone();
         let description = args.description;
         let prompt = args.prompt;
 
@@ -105,6 +118,7 @@ impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
                 config,
                 subagent_tools,
                 parent_memory,
+                trace_store,
                 description,
                 prompt,
                 progress_tx,
@@ -127,16 +141,19 @@ async fn run_subagent<C: LLMClient + 'static>(
     config: SubagentConfig,
     subagent_tools: Arc<ToolRegistry>,
     parent_memory: SharedMemory,
+    trace_store: Option<Arc<TraceStore>>,
     description: String,
     prompt: String,
     progress_tx: mpsc::UnboundedSender<Progress>,
 ) {
+    let start = Instant::now();
+
     // 1. Build fresh, isolated memory (user prompt is pushed automatically
     //    by `run_with_events` when the agent loop starts).
     let memory = build_subagent_memory(&config, &parent_memory);
 
     // 2. Build EngineContext for the sub-agent.
-    let ctx = EngineContext::builder(llm, memory, subagent_tools, &config.model)
+    let ctx = EngineContext::builder(llm, memory.clone(), subagent_tools, &config.model)
         .max_steps(config.max_steps)
         .max_retries(config.max_retries)
         .streaming(config.streaming)
@@ -161,11 +178,25 @@ async fn run_subagent<C: LLMClient + 'static>(
         .unwrap_or_else(|| std::time::Duration::from_secs(DEFAULT_SUBAGENT_TIMEOUT_SECS));
     let deadline = tokio::time::Instant::now() + timeout;
 
+    let mut tool_call_count: usize = 0;
+    let mut llm_call_count: usize = 0;
+
     let result = loop {
         tokio::select! {
             event = sub_rx.recv() => {
                 match event {
-                    Some(evt) => forward_event_to_progress(evt, &progress_tx),
+                    Some(evt) => {
+                        // Count tool calls and LLM calls for trace.
+                        if matches!(&evt, engine::AgentEvent::ToolCall { .. }) {
+                            tool_call_count += 1;
+                        }
+                        if matches!(&evt, engine::AgentEvent::RunCompleted { .. }
+                            | engine::AgentEvent::RunFailed { .. })
+                        {
+                            llm_call_count += 1; // rough: RunCompleted follows an LLM call
+                        }
+                        forward_event_to_progress(evt, &progress_tx);
+                    }
                     None => {
                         // Channel closed — agent task finished or panicked.
                         break agent_handle.await;
@@ -178,12 +209,17 @@ async fn run_subagent<C: LLMClient + 'static>(
                     "Sub-agent timed out after {:.0}s",
                     timeout.as_secs_f64()
                 )));
+                // Emit trace even on timeout
+                emit_subagent_trace(&trace_store, &description, start, &memory, tool_call_count, llm_call_count);
                 return;
             }
         }
     };
 
-    // 7. Agent finished (or panicked).  Emit final result.
+    // 7. Emit subagent trace before the final result.
+    emit_subagent_trace(&trace_store, &description, start, &memory, tool_call_count, llm_call_count);
+
+    // 8. Agent finished (or panicked).  Emit final result.
     match result {
         Ok(Ok(answer)) => {
             let _ = progress_tx.send(Progress::Done(answer));
@@ -205,6 +241,57 @@ async fn run_subagent<C: LLMClient + 'static>(
             };
             let _ = progress_tx.send(Progress::Done(msg));
         }
+    }
+}
+
+/// Helper — emit a [`TraceEvent::SubagentFinished`] if a trace store is attached.
+fn emit_subagent_trace(
+    trace_store: &Option<Arc<TraceStore>>,
+    description: &str,
+    start: Instant,
+    memory: &SharedMemory,
+    tool_calls: usize,
+    llm_calls: usize,
+) {
+    if let Some(store) = trace_store {
+        let duration = start.elapsed();
+        let usage = memory
+            .read()
+            .ok()
+            .and_then(|mem| {
+                if mem.usage_history.is_empty() {
+                    mem.last_usage.clone()
+                } else {
+                    let mut total = provider::Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                    };
+                    for u in &mem.usage_history {
+                        total.prompt_tokens += u.prompt_tokens;
+                        total.completion_tokens += u.completion_tokens;
+                        total.total_tokens += u.total_tokens;
+                    }
+                    Some(total)
+                }
+            })
+            .unwrap_or(provider::Usage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                total_tokens: 0,
+            });
+
+        store.metrics.add_subagent(description.to_string());
+        store.metrics.add_token_usage(&usage);
+
+        store.emit(TraceEvent::SubagentFinished {
+            description: description.to_string(),
+            steps: 0, // not tracked from parent side
+            llm_calls,
+            tool_calls,
+            usage,
+            duration,
+        });
     }
 }
 

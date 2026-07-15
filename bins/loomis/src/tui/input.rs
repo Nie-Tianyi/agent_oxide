@@ -587,7 +587,12 @@ impl App {
                     .unwrap_or_else(|| self.workspace_root.join(".loomis").join("traces"));
                 // Ensure directory exists.
                 let _ = std::fs::create_dir_all(&traces_dir);
-                let filename = format!("trace_{}.jsonl", memory::iso8601_now());
+                // Replace colons for Windows filename compatibility.
+                // ISO 8601 "2026-07-15T14:30:00Z" → "2026-07-15T14-30-00Z"
+                let filename = format!(
+                    "trace_{}.jsonl",
+                    memory::iso8601_now().replace(':', "-")
+                );
                 let path = traces_dir.join(&filename);
                 match std::fs::File::create(&path) {
                     Ok(file) => {

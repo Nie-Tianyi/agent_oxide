@@ -9,11 +9,13 @@
 //! messages are preserved, so the hook detects them and skips.
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use engine::AgentHook;
 use memory::SharedMemory;
 use provider::{Message, Role};
+use skills::SkillRegistry;
 
 /// Maximum bytes to load from a project-rules file before truncating.
 const PROJECT_RULES_MAX_BYTES: usize = 10_000;
@@ -31,14 +33,20 @@ const PROJECT_RULES_FILES: &[&str] = &["LOOMIS.md", "AGENTS.md", "CLAUDE.md"];
 pub struct SystemPromptHook {
     workspace_root: PathBuf,
     tool_names: Vec<String>,
+    skill_registry: Arc<SkillRegistry>,
     seeded: AtomicBool,
 }
 
 impl SystemPromptHook {
-    pub fn new(workspace_root: PathBuf, tool_names: Vec<String>) -> Self {
+    pub fn new(
+        workspace_root: PathBuf,
+        tool_names: Vec<String>,
+        skill_registry: Arc<SkillRegistry>,
+    ) -> Self {
         Self {
             workspace_root,
             tool_names,
+            skill_registry,
             seeded: AtomicBool::new(false),
         }
     }
@@ -53,10 +61,10 @@ impl AgentHook for SystemPromptHook {
 
         let mut mem = memory.write().expect("memory lock poisoned");
 
-        // 1. Main system prompt (5 sections, dynamic tool list)
+        // 1. Main system prompt (dynamic tool list + skill list)
         mem.push(Message::new(
             Role::System,
-            build_system_prompt(&self.tool_names),
+            build_system_prompt(&self.tool_names, &self.skill_registry),
         ));
 
         // 2. Environment context (platform, shell, cwd, date, git)
@@ -74,18 +82,31 @@ impl AgentHook for SystemPromptHook {
 
 // ── System Prompt ─────────────────────────────────────────────────────────────────
 
-/// Build the main system prompt with tool list injected dynamically.
+/// Build the main system prompt with tool list and skill list injected dynamically.
 ///
 /// Loaded from `prompts/system.md` at compile time via `include_str!()`.
-/// Only `{tool_list}` is dynamic — a simple `str::replace` handles it.
-fn build_system_prompt(tool_names: &[String]) -> String {
+/// `{tool_list}` and `{skill_list}` are dynamic — simple `str::replace` handles them.
+fn build_system_prompt(tool_names: &[String], skill_registry: &SkillRegistry) -> String {
     let tool_list = tool_names
         .iter()
         .map(|n| format!("`{n}`"))
         .collect::<Vec<_>>()
         .join(", ");
 
-    include_str!("../../prompts/system.md").replace("{tool_list}", &tool_list)
+    let skill_list = if skill_registry.is_empty() {
+        "  (none available. Define skills as .md files in .loomis/skills/)".to_string()
+    } else {
+        skill_registry
+            .list()
+            .iter()
+            .map(|s| format!("- `{}` — {}", s.name, s.description))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+
+    include_str!("../../prompts/system.md")
+        .replace("{tool_list}", &tool_list)
+        .replace("{skill_list}", &skill_list)
 }
 
 // ── Environment Context ─────────────────────────────────────────────────────────

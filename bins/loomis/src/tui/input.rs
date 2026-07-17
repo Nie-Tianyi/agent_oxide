@@ -394,6 +394,51 @@ impl App {
             return Some(self.do_resume(name));
         }
 
+        // ── /skill <name> — load a named skill ──
+        if let Some(name) = input.strip_prefix("/skill ") {
+            let name = name.trim();
+            if name.is_empty() {
+                let available = self.skill_registry.names().join(", ");
+                let content = if available.is_empty() {
+                    "No skills available. Define skill .md files in .loomis/skills/.".into()
+                } else {
+                    format!("Usage: /skill <name>\nAvailable: {available}")
+                };
+                self.messages.push(ChatMessage::System {
+                    content,
+                    timestamp: ChatMessage::now_timestamp(),
+                });
+                return Some(None);
+            }
+
+            match self.skill_registry.by_name(name) {
+                Some(skill) => {
+                    // Add to active skills for the hook to maintain.
+                    if let Ok(mut active) = self.active_skills.write() {
+                        active.insert(skill.name.clone(), skill.content.clone());
+                    }
+                    // Inject directly into memory for immediate effect.
+                    let msg = format!("[SKILL: {}]\n\n{}", skill.name, skill.content);
+                    {
+                        let mut mem = self.memory.write().expect("memory lock poisoned");
+                        mem.push(Message::new(Role::System, msg));
+                    }
+                    self.messages.push(ChatMessage::System {
+                        content: format!("Loaded skill \"{}\" — {}", skill.name, skill.description),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                }
+                None => {
+                    let available = self.skill_registry.names().join(", ");
+                    self.messages.push(ChatMessage::Error {
+                        content: format!("Unknown skill \"{name}\". Available: [{available}]"),
+                        timestamp: ChatMessage::now_timestamp(),
+                    });
+                }
+            }
+            return Some(None);
+        }
+
         // ── Exact-match commands ──
         match input {
             "/exit" => {
@@ -535,6 +580,7 @@ impl App {
                     "  /tools         — list registered tools",
                     "  /debug         — toggle trace debug overlay",
                     "  /trace-save    — export trace events to JSONL file",
+                    "  /skill <name>  — load a named skill",
                     "  /help          — show this message",
                     "",
                     "Shell prefix:",

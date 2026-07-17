@@ -11,6 +11,7 @@ mod grep;
 mod ls;
 mod read;
 mod shell;
+mod skill_tool;
 mod todo;
 mod write;
 
@@ -25,5 +26,6 @@ pub use grep::GrepTool;
 pub use ls::LsTool;
 pub use read::ReadTool;
 pub use shell::ShellTool;
+pub use skill_tool::SkillTool;
 pub use todo::{TODO_MARKER, TodoItem, TodoTool};
 pub use write::WriteTool;

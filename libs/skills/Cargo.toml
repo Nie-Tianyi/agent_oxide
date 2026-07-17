@@ -1,0 +1,15 @@
+[package]
+name = "skills"
+version = "0.1.0"
+edition = "2024"
+description = "Skill definitions, discovery, and registry for Agent Oxide"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = "0.9"
+tracing = { workspace = true }
+glob = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

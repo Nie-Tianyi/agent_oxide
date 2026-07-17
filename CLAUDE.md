@@ -37,7 +37,8 @@ agent_oxide/
 │   ├── hooks/              # MicroCompactHook + MacroCompactHook (AgentHook impls)
 │   ├── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent stream, ResponseRouter
 │   ├── subagent/           # SubagentTool — spawn child agents as tools
-│   └── observability/      # TraceEvent, TraceStore, RunMetrics — full-chain agent tracing
+│   ├── observability/      # TraceEvent, TraceStore, RunMetrics — full-chain agent tracing
+│   └── skills/            # SkillDef, SkillRegistry, YAML frontmatter parser — skill discovery
 ├── bins/
 │   └── loomis/             # Binary — concrete tools, hooks, sandbox, TUI, assembly
 └── docs/
@@ -59,7 +60,8 @@ agent_oxide/
 | `engine` | Core loop | `Agent`, `AgentBuilder`, `AgentHook` trait, `AgentEvent`, `AgentError`, `EngineContext`, `ResponseRouter`, `InterventionRequest`/`Response`, `RunOutcome`, `CallOrigin` |
 | `subagent` | Concrete | `SubagentTool<C>`, `SubagentConfig`, `filter_tools()` |
 | `observability` | Abstraction | `TraceEvent`, `TraceStore`, `RunMetrics`, `SubagentTrace`, `Timestamped<T>` |
-| `loomis` | Binary | 11 concrete tools, 6 hooks (Sandbox, Persistence, SystemPrompt, TodoList, Observability, PlanMode), sandbox system, TUI, `AgentKit`, `build_coding_agent()` |
+| `skills` | Abstraction | `SkillDef`, `SkillRegistry`, `ActiveSkills`, YAML frontmatter parser, `SkillError` |
+| `loomis` | Binary | 12 concrete tools, 7 hooks (Sandbox, Persistence, SystemPrompt, TodoList, Observability, PlanMode, Skill), sandbox system, TUI, `AgentKit`, `build_coding_agent()` |
 
 ### Dependency graph
 
@@ -77,6 +79,8 @@ provider (no internal deps)
     ├── subagent ──────── (uses provider + tools + engine + memory + observability)
     │       ↑
     ├── observability ─── (uses provider)
+    │       ↑
+    ├── skills ─────────── (no internal deps — pure data types + filesystem IO)
     │       ↑
     └── loomis (bin) ──── (uses all libs)
 ```
@@ -104,7 +108,7 @@ Hooks run in registration order. For async work inside sync hooks (e.g. LLM summ
 
 Concrete hooks:
 - **`hooks` crate**: `MicroCompactHook` (tool-output clearing), `MacroCompactHook<C>` (LLM summarisation)
-- **`loomis` crate**: `SandboxHook` (security), `PersistenceHook` (auto-save), `SystemPromptHook` (seed prompts), `TodoListHook` (sync todo state), `ObservabilityHook` (full-chain trace collection)
+- **`loomis` crate**: `SandboxHook` (security), `PersistenceHook` (auto-save), `SystemPromptHook` (seed prompts), `TodoListHook` (sync todo state), `ObservabilityHook` (full-chain trace collection), `SkillHook` (maintain `[SKILL: ...]` System messages), `PlanModeHook` (tool restriction + prompt injection)
 
 ### `AgentEvent` stream
 Single `mpsc::unbounded_channel`. Variants:
@@ -185,6 +189,60 @@ Toggled via `/plan` slash command. When active, the agent switches to a read-onl
 
 **Plan file**: `.loomis/plan.md` — the only writable file in plan mode. The LLM is instructed to write its plan here, then ask the user to review and toggle plan mode off.
 
+### Hook registration order
+
+Hooks run in this order (set in `build_coding_agent()`):
+
+| Pos | Hook | Role |
+| --- | --- | --- |
+| 0 | `SystemPromptHook` | Seeds initial system prompts (now includes `{skill_list}`) |
+| 1 | `PlanModeHook` | Plan mode tool restrictions + `[PLAN_MODE]` prompt injection |
+| 2 | `ObservabilityHook` | Full-chain trace event collection |
+| 3 | `PersistenceHook` | Auto-save conversation after each run |
+| 4 | `TodoListHook` | Maintain `[TODO]` System message |
+| 5 | `SkillHook` | Maintain `[SKILL: ...]` System messages |
+| 6 | `MacroCompactHook` | LLM summarisation when over token budget |
+| 7 | `MicroCompactHook` | Clear old tool outputs in-place |
+| 8 | `SandboxHook` | Security sandbox (shell approval, quotas, audit) |
+
+### Skills (LLM self-selecting instructions)
+
+Skill `.md` files (YAML frontmatter + Markdown body) are discovered at startup, listed in the system prompt, and loaded on demand by the LLM or user into the conversation as `[SKILL: name]` System messages.
+
+| Component | Crate | Role |
+| --- | --- | --- |
+| `SkillDef` | `skills` | Parsed skill: `name`, `description`, `content` |
+| `SkillRegistry` | `skills` | Load-once registry — `discover(&[PathBuf])` scans `*.md` files, deduplicates (later paths win) |
+| `SkillFrontmatter` | `skills` | `serde_yaml` deserialization target for `---\nname: ...\ndescription: ...\n---` |
+| `ActiveSkills` | `skills` | `Arc<RwLock<HashMap<String, String>>>` — shared between `SkillTool` (writer) and `SkillHook` (reader) |
+| `SkillTool` | `loomis` | LLM-callable tool — looks up skill by name in registry, writes to `ActiveSkills`, returns content |
+| `SkillHook` | `loomis` | `on_llm_start`: clones `ActiveSkills`, `retain()` to remove old `[SKILL:` messages, inserts one per active skill at index 0 |
+| `/skill <name>` | `loomis` (TUI) | Slash command — loads a skill directly, writes to `ActiveSkills` + injects into memory |
+
+**Data flow**: `.md` files → `SkillRegistry::discover()` at startup → `{skill_list}` in system prompt → LLM calls `skill(name="...")` → `SkillTool` writes to `ActiveSkills` → next `on_llm_start`, `SkillHook` injects `[SKILL: name]\n\n{content}` System messages.
+
+**Search paths** (configured in binary crate, passed to library):
+
+1. `<workspace>/.loomis/skills/` (project — higher priority)
+2. `~/.loomis/skills/` (user)
+
+**Skill file format**:
+
+```markdown
+---
+name: my-skill
+description: What this skill does (one line)
+---
+
+# Skill instructions (Markdown body)
+
+These instructions are injected as a System message when loaded.
+```
+
+**Marker convention**: `[SKILL:` prefix — follows the same `retain()`-based pattern as `[PLAN_MODE]` and `[TODO]`.
+
+**Allowed in plan mode**: The `skill` tool runs in plan mode (it's read-only and only affects conversation instructions).
+
 ### `ResponseRouter`
 Maps `request_id` → `SyncSender<InterventionResponse>`. Multiple components (SandboxHook, AskUserQuestionTool) can need user intervention simultaneously — each registers its own channel, sends an `InterventionRequired` event with its `request_id`, and blocks on its receiver. The TUI routes responses through the router.
 
@@ -197,11 +255,11 @@ Auto-saves to `.loomis/threads/{name}.json` + `.md` after each agent turn via `P
 ### Subagent
 `SubagentTool<C>` wraps a child `Agent` as a `Tool`. Spawned with filtered (typically read-only) tool set and its own Memory. Results streamed as `Progress::InProgress`/`Progress::Done`. Config: `SubagentConfig` (model, max_steps, timeout_secs, inherit_context_messages).
 
-### Loomis concrete tools (11)
-`Calculator`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Ls`, `Shell`, `Subagent`, `AskUserQuestion`, `Todo`
+### Loomis concrete tools (12)
+`Calculator`, `Read`, `Edit`, `Write`, `Glob`, `Grep`, `Ls`, `Shell`, `Subagent`, `AskUserQuestion`, `Todo`, `Skill`
 
-### Loomis concrete hooks (6)
-`SystemPromptHook` (seeds initial system messages), `PlanModeHook` (tool restriction + plan-mode prompt injection), `ObservabilityHook` (full-chain trace collection), `PersistenceHook` (auto-save), `TodoListHook` (syncs [TODO] System message), `SandboxHook` (security)
+### Loomis concrete hooks (7)
+`SystemPromptHook` (seeds initial system messages, now includes `{skill_list}`), `PlanModeHook` (tool restriction + plan-mode prompt injection), `ObservabilityHook` (full-chain trace collection), `PersistenceHook` (auto-save), `TodoListHook` (syncs [TODO] System message), `SkillHook` (maintains `[SKILL: ...]` System messages from shared `ActiveSkills` state), `SandboxHook` (security)
 
 ### TUI module (`bins/loomis/src/tui/`)
 
@@ -215,7 +273,7 @@ agent_rx ←────── AgentEvent ─────── agent_tx
 ```
 
 - **Keybindings**: Enter (submit), Ctrl+C (cancel), Esc (cancel), Ctrl+D (exit), Ctrl+O (toggle trace debug overlay), PgUp/PgDown (scroll), Up/Down (history), Left/Right/Home/End (cursor). Intervention prompts: ↑/↓ (navigate), Enter (select), Esc (cancel)
-- **Slash commands**: `/exit`, `/new`, `/plan`, `/approve`, `/save <name>`, `/resume [name]`, `/threads`, `/stats`, `/tools`, `/debug`, `/trace-save`, `/help`
+- **Slash commands**: `/exit`, `/new`, `/plan`, `/approve`, `/save <name>`, `/resume [name]`, `/threads`, `/stats`, `/tools`, `/debug`, `/trace-save`, `/skill <name>`, `/help`
 - **Bang prefix**: `!command` — runs shell, output shared with agent
 
 ## Future work

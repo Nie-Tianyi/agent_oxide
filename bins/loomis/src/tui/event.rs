@@ -55,6 +55,8 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         todos,
         trace_store,
         plan_mode,
+        skill_registry,
+        active_skills,
     } = kit;
 
     // ── Create command channel ────────────────────────────────────
@@ -102,6 +104,8 @@ pub fn run(kit: AgentKit, workspace_root: PathBuf, model: &str) -> io::Result<()
         persistence_config,
         trace_store,
         plan_mode,
+        skill_registry,
+        active_skills,
     );
 
     // ── Event loop ───────────────────────────────────────────────────

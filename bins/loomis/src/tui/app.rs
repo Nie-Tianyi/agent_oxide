@@ -17,6 +17,7 @@ use std::sync::{Arc, RwLock};
 use engine::{AgentEvent, CallOrigin};
 use memory::{PendingHints, PersistenceConfig, SharedMemory};
 use observability::TraceStore;
+use skills::{self, SkillRegistry};
 
 use super::messages::{ChatMessage, ToolCallState};
 use crate::hooks::PlanModeState;
@@ -104,6 +105,12 @@ pub struct App {
     // ── Plan mode ──
     /// Shared plan-mode toggle between TUI and [`PlanModeHook`].
     pub plan_mode: Arc<PlanModeState>,
+
+    // ── Skills ──
+    /// Discovered skills — read-only after startup, used by `/skill` command.
+    pub skill_registry: Arc<SkillRegistry>,
+    /// Currently active skills — written by `/skill` and [`SkillTool`].
+    pub active_skills: skills::ActiveSkills,
 }
 
 impl App {
@@ -119,6 +126,8 @@ impl App {
         persistence_config: PersistenceConfig,
         trace_store: Arc<TraceStore>,
         plan_mode: Arc<PlanModeState>,
+        skill_registry: Arc<SkillRegistry>,
+        active_skills: skills::ActiveSkills,
     ) -> Self {
         let model = model.into();
         Self {
@@ -152,6 +161,8 @@ impl App {
             trace_store,
             debug_overlay: super::debug::DebugOverlay::new(),
             plan_mode,
+            skill_registry,
+            active_skills,
         }
     }
 }
@@ -369,6 +380,8 @@ mod tests {
         let todos = Arc::new(RwLock::new(Vec::<TodoItem>::new()));
         let trace_store = Arc::new(TraceStore::new());
         let plan_mode = Arc::new(PlanModeState::new());
+        let skill_registry = Arc::new(SkillRegistry::empty());
+        let active_skills = Arc::new(RwLock::new(std::collections::HashMap::new()));
         App::new(
             "test-model",
             memory,
@@ -379,6 +392,8 @@ mod tests {
             PersistenceConfig::default(),
             trace_store,
             plan_mode,
+            skill_registry,
+            active_skills,
         )
     }
 

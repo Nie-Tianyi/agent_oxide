@@ -1,5 +1,6 @@
 //! Agent assembly — wires all components together.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -8,6 +9,7 @@ use engine::{Agent, EngineContext};
 use hooks;
 use memory::{Memory, PendingHints, PersistenceConfig, SharedMemory};
 use observability::TraceStore;
+use skills::{self, SkillRegistry};
 use subagent::{self, SubagentConfig};
 use tokio::sync::mpsc;
 use tools::ToolRegistry;
@@ -15,15 +17,15 @@ use tools::ToolRegistry;
 use tools::SandboxConfig;
 
 use crate::hooks::{
-    ObservabilityHook, PersistenceHook, PlanModeHook, PlanModeState, SandboxHook, SystemPromptHook,
-    TodoListHook,
+    ObservabilityHook, PersistenceHook, PlanModeHook, PlanModeState, SandboxHook, SkillHook,
+    SystemPromptHook, TodoListHook,
 };
 use crate::sandbox::audit_logger::AuditLogger;
 use crate::sandbox::resource_tracker::ResourceTracker;
 use crate::sandbox::shell_filter::ShellFilter;
 use crate::tools::{
     AskUserQuestionTool, CalculatorTool, EditTool, EnterPlanModeTool, ExitPlanModeTool, GlobTool,
-    GrepTool, LsTool, ReadTool, ShellTool, TodoItem, TodoTool, WriteTool,
+    GrepTool, LsTool, ReadTool, ShellTool, SkillTool, TodoItem, TodoTool, WriteTool,
 };
 use engine::ResponseRouter;
 
@@ -57,6 +59,10 @@ pub struct AgentKit {
     pub trace_store: Arc<TraceStore>,
     /// Shared plan-mode toggle between TUI and [`PlanModeHook`].
     pub plan_mode: Arc<PlanModeState>,
+    /// Discovered skills — read-only after startup.
+    pub skill_registry: Arc<SkillRegistry>,
+    /// Currently active skills — written by [`SkillTool`], read by [`SkillHook`].
+    pub active_skills: skills::ActiveSkills,
 }
 
 /// Build a fully-wired coding agent with all channels and hooks.
@@ -96,6 +102,15 @@ pub fn build_coding_agent(
     // can be registered and included in tool_names.
     let plan_mode = Arc::new(PlanModeState::new());
     let plan_file_path = workspace_root.join(".loomis").join("plan.md");
+
+    // ── Skills ────────────────────────────────────────────────
+    // Discover skills from project and user directories.
+    let skill_search_paths = vec![
+        workspace_root.join(".loomis").join("skills"),
+        dirs_fallback().join(".loomis").join("skills"),
+    ];
+    let skill_registry = Arc::new(SkillRegistry::discover(&skill_search_paths));
+    let active_skills: skills::ActiveSkills = Arc::new(RwLock::new(HashMap::new()));
 
     // ── Tool registry ────────────────────────────────────────
     let mut registry = ToolRegistry::new();
@@ -167,6 +182,12 @@ pub fn build_coding_agent(
     exit_plan_tool.set_agent_tx(agent_tx.clone());
     registry.register(Arc::new(exit_plan_tool));
 
+    // SkillTool — lets the LLM load named skill instructions.
+    registry.register(Arc::new(SkillTool::new(
+        skill_registry.clone(),
+        active_skills.clone(),
+    )));
+
     let tool_names: Vec<String> = registry.iter().map(|(n, _)| n.to_string()).collect();
     let registry = Arc::new(registry);
 
@@ -214,9 +235,13 @@ pub fn build_coding_agent(
         compact_client,
     );
 
-    // SystemPromptHook — seeds the three initial system messages on first run.
-    let system_prompt_hook =
-        SystemPromptHook::new(workspace_root.to_path_buf(), tool_names.clone());
+    // SystemPromptHook — seeds the three initial system messages on first run
+    // (now includes skill list in the main system prompt).
+    let system_prompt_hook = SystemPromptHook::new(
+        workspace_root.to_path_buf(),
+        tool_names.clone(),
+        skill_registry.clone(),
+    );
 
     // TodoListHook — maintains the [TODO] System message from the shared
     // todo state.  Runs before compaction hooks so the message is present
@@ -235,9 +260,10 @@ pub fn build_coding_agent(
         Box::new(observability_hook), // 2. Full-chain trace event collection
         Box::new(persistence_hook),   // 3. Save conversation after each run
         Box::new(todo_list_hook),     // 4. Maintain [TODO] System message
-        Box::new(macro_compact),      // 5. LLM summarisation
-        Box::new(micro_compact),      // 6. Tool output clearing
-        Box::new(approval_hook),      // 7. Security sandbox
+        Box::new(SkillHook::new(active_skills.clone())), // 5. Maintain [SKILL: ...] System messages
+        Box::new(macro_compact),      // 6. LLM summarisation
+        Box::new(micro_compact),      // 7. Tool output clearing
+        Box::new(approval_hook),      // 8. Security sandbox
     ];
 
     // ── Engine context (via builder) ─────────────────────────
@@ -264,5 +290,26 @@ pub fn build_coding_agent(
         todos: todo_state,
         trace_store,
         plan_mode,
+        skill_registry,
+        active_skills,
     }
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────────
+
+/// Best-effort home directory — `HOME` on Unix, `USERPROFILE` on Windows.
+fn dirs_fallback() -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        if let Ok(dir) = std::env::var("USERPROFILE") {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        if let Ok(dir) = std::env::var("HOME") {
+            return std::path::PathBuf::from(dir);
+        }
+    }
+    std::path::PathBuf::from(".")
 }

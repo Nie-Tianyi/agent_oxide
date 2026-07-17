@@ -21,6 +21,7 @@ engine = { path = "../../libs/engine" }
 hooks = { path = "../../libs/hooks" }
 subagent = { path = "../../libs/subagent" }
 observability = { path = "../../libs/observability" }
+skills = { path = "../../libs/skills" }
 reqwest = { workspace = true }
 tokio = { workspace = true }
 serde = { workspace = true }

@@ -1026,6 +1026,8 @@ checksum = "521739c6d2bac4aa25192232afe6841231376b2b26d4d9fae5ecf8ca5772e441"
 name = "observability"
 version = "0.1.0"
 dependencies = [
+ "engine",
+ "memory",
  "provider",
  "tracing",
 ]

@@ -118,7 +118,8 @@ fn content_preview(content: &str) -> String {
     let line_count = content.lines().count();
 
     let truncated = if first_line.len() > 80 {
-        format!("{}...", &first_line[..77])
+        let boundary = first_line.floor_char_boundary(77);
+        format!("{}...", &first_line[..boundary])
     } else {
         first_line.to_string()
     };

@@ -10,7 +10,7 @@ use std::time::Instant;
 
 use engine::{Agent, EngineContext};
 use memory::{Memory, SharedMemory};
-use observability::{TraceEvent, TraceStore};
+use observability::{ObservabilityHook, TraceEvent, TraceStore};
 use provider::{LLMClient, Message, Role};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -152,11 +152,15 @@ async fn run_subagent<C: LLMClient + 'static>(
     //    by `run_with_events` when the agent loop starts).
     let memory = build_subagent_memory(&config, &parent_memory);
 
-    // 2. Build EngineContext for the sub-agent.
+    // 2. Build EngineContext for the sub-agent, with its own observability
+    //    hook so internal steps, LLM calls, and tool calls are traced.
+    let child_store = Arc::new(TraceStore::new());
+    let obs_hook = ObservabilityHook::new(child_store, memory.clone());
     let ctx = EngineContext::builder(llm, memory.clone(), subagent_tools, &config.model)
         .max_steps(config.max_steps)
         .max_retries(config.max_retries)
         .streaming(config.streaming)
+        .hook(obs_hook)
         .build();
     let agent = Agent::new(ctx);
 
@@ -363,7 +367,8 @@ fn forward_event_to_progress(event: engine::AgentEvent, tx: &mpsc::UnboundedSend
         } => {
             // Truncate long arguments for readability.
             let args_summary = if arguments.len() > TRUNCATE_ARGS_CHARS {
-                format!("{}…", &arguments[..TRUNCATE_ARGS_CHARS])
+                let boundary = arguments.floor_char_boundary(TRUNCATE_ARGS_CHARS);
+                format!("{}…", &arguments[..boundary])
             } else {
                 arguments
             };

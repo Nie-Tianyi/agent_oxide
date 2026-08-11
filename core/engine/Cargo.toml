@@ -1,0 +1,15 @@
+[package]
+name = "engine"
+version.workspace = true
+edition = "2024"
+description = "Agent engine — ReAct loop, AgentHook lifecycle, AgentEvent streaming"
+
+[dependencies]
+provider = { version = "0.5.0", path = "../provider" }
+tools = { version = "0.5.0", path = "../tools" }
+memory = { version = "0.5.0", path = "../memory" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+tracing = { workspace = true }

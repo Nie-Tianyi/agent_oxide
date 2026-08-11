@@ -1,0 +1,25 @@
+[package]
+name = "agent-kit"
+version.workspace = true
+edition = "2024"
+description = "NVIDIA OO Agents-style ergonomics mapped onto the Agent Oxide core API"
+
+[dependencies]
+provider = { version = "0.5.0", path = "../../core/provider" }
+tools = { version = "0.5.0", path = "../../core/tools" }
+engine = { version = "0.5.0", path = "../../core/engine" }
+memory = { version = "0.5.0", path = "../../core/memory" }
+tokio = { workspace = true }
+# `rc` is needed for `Arc<T>: Serialize` (serde moved Rc/Arc impls
+# behind the optional `rc` feature) — `#[context(dynamic)]` fields are
+# typically shared via `Arc<RwLock<...>>`.
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+agent-macros = { version = "0.5.0", path = "../agent-macros" }
+deepseek = { version = "0.5.0", path = "../../core/deepseek" }
+futures-executor = { workspace = true }
+futures-util = { workspace = true }

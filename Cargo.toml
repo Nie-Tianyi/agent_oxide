@@ -1,0 +1,53 @@
+[package]
+name = "agent_oxide"
+version = "0.5.0"
+edition = "2024"
+description = "Agent Oxide — a modular agent framework for Rust (ReAct engine, LLM providers, tools, sandbox, persistence, skills)"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/agent-oxide/agent_oxide"
+keywords = ["agent", "llm", "react", "framework", "ai"]
+categories = ["asynchronous", "development-tools"]
+
+[dependencies]
+# ── Core crates ──────────────────────────────────────────────────────────
+provider = { version = "0.5.0", path = "core/provider" }
+deepseek = { version = "0.5.0", path = "core/deepseek" }
+memory = { version = "0.5.0", path = "core/memory" }
+tools = { version = "0.5.0", path = "core/tools" }
+tools-macros = { version = "0.5.0", path = "core/tools-macros" }
+engine = { version = "0.5.0", path = "core/engine" }
+util = { version = "0.5.0", path = "core/util" }
+# ── Extension crates ─────────────────────────────────────────────────────
+agent-kit = { version = "0.5.0", path = "extensions/agent-kit" }
+agent-macros = { version = "0.5.0", path = "extensions/agent-macros" }
+hooks = { version = "0.5.0", path = "extensions/compact" }
+observability = { version = "0.5.0", path = "extensions/observability" }
+persistence = { version = "0.5.0", path = "extensions/persistence" }
+sandbox = { version = "0.5.0", path = "extensions/sandbox" }
+skills = { version = "0.5.0", path = "extensions/skills" }
+subagent = { version = "0.5.0", path = "extensions/subagent" }
+
+[workspace]
+members = ["core/*", "extensions/*"]
+resolver = "2"
+
+[workspace.package]
+version = "0.5.0"
+edition = "2024"
+
+[workspace.dependencies]
+reqwest = { version = "0.13.4", features = ["json", "stream"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.0", features = ["full"] }
+futures-core = "0.3"
+futures-executor = "0.3"
+futures-util = "0.3.32"
+regex = "1"
+schemars = { version = "1", features = ["derive"] }
+glob = "0.3"
+tempfile = "3"
+toml = "1.1"
+tracing = "0.1"
+serde_yaml = "0.9"
+time = { version = "0.3", features = ["macros", "formatting", "local-offset"] }

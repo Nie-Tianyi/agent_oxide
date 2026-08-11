@@ -1,0 +1,13 @@
+[package]
+name = "tools-macros"
+version.workspace = true
+edition = "2024"
+description = "Proc macros for the tools crate — #[tool] attribute macro"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

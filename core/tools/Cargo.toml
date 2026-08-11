@@ -1,0 +1,15 @@
+[package]
+name = "tools"
+version.workspace = true
+edition = "2024"
+description = "Tool abstraction — Tool trait, ToolRegistry, and JSON Schema generation"
+
+[dependencies]
+provider = { version = "0.5.0", path = "../provider" }
+tools-macros = { version = "0.5.0", path = "../tools-macros" }
+futures-core = { workspace = true }
+futures-executor = { workspace = true }
+futures-util = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }

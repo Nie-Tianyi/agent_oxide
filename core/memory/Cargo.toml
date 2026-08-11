@@ -1,0 +1,9 @@
+[package]
+name = "memory"
+version.workspace = true
+edition = "2024"
+description = "Conversation memory management — in-memory buffer types"
+
+[dependencies]
+provider = { version = "0.5.0", path = "../provider" }
+tracing = { workspace = true }

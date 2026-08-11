@@ -1,0 +1,18 @@
+[package]
+name = "subagent"
+version.workspace = true
+edition = "2024"
+description = "Subagent as Tool — spawn autonomous sub-agents for complex sub-tasks"
+
+[dependencies]
+provider = { version = "0.5.0", path = "../../core/provider" }
+tools = { version = "0.5.0", path = "../../core/tools" }
+engine = { version = "0.5.0", path = "../../core/engine" }
+memory = { version = "0.5.0", path = "../../core/memory" }
+observability = { version = "0.5.0", path = "../observability" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+futures-util = { workspace = true }
+schemars = { workspace = true }
+tracing = { workspace = true }

@@ -1425,7 +1425,7 @@ Covered in §8.  All file paths are canonicalized and bound-checked.
 ### Layer 2: ShellFilter (Command Classification)
 
 ```rust
-// extensions/src/sandbox/shell_filter.rs (conceptual)
+// extensions/sandbox/src/shell_filter.rs (conceptual)
 enum Classification {
     AutoApprove,            // Safe prefix match
     Deny(String),           // Matches deny pattern
@@ -2002,10 +2002,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Want to... | Read this file |
 |---|---|
 | Understand the ReAct loop | `core/engine/src/agent.rs` |
-| See how tools are defined | `extensions/src/tools/calculator.rs` |
-| See how sandbox works | `extensions/src/sandbox/` |
-| See how TUI renders events | `extensions/src/tui/` |
-| See how agent is assembled | `extensions/src/agent_setup.rs` |
+| See how tools are defined | loomis app: `bins/loomis/src/tools/` |
+| See how sandbox works | `extensions/sandbox/src/` |
+| See how TUI renders events | loomis app: `bins/loomis/src/tui/` |
+| See how agent is assembled | loomis app: `bins/loomis/src/app.rs` |
 | Understand SSE streaming | `core/deepseek/src/client.rs` |
 | Understand compaction | `extensions/compact/src/compact.rs` |
 | Understand subagents | `extensions/subagent/src/tool.rs` |

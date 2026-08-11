@@ -45,37 +45,42 @@ echo "DEEPSEEK_API=sk-your-key-here" > .env
 
 `dotenvy` loads `.env` automatically — your API key never appears in source code.
 
-### Create your example binary
+### Create your example project
 
-We'll add a tutorial binary to the workspace.  Create the directory structure:
+We'll create a standalone tutorial project next to the `agent_oxide` repo
+(the framework is a library — the repo itself has no binary):
 
 ```bash
-mkdir -p bins/tutorial/src
+cd ..
+cargo new tutorial
+cd tutorial
 ```
 
-**`bins/tutorial/Cargo.toml`:**
+Each crate is published independently on crates.io, so you can depend on
+just the pieces you need — with `path` while you follow along locally (after
+publishing you'd use `version = "0.5"` instead):
+
+**`tutorial/Cargo.toml`:**
 
 ```toml
-[package]
-name = "tutorial"
-version = "0.1.0"
-edition = "2024"
-
 [dependencies]
-engine = { path = "../../core/engine" }
-deepseek = { path = "../../core/deepseek" }
-tools = { path = "../../core/tools" }
-tools-macros = { path = "../../core/tools-macros" }
-memory = { path = "../../core/memory" }
-hooks = { path = "../../extensions/compact" }
-provider = { path = "../../core/provider" }
+deepseek = { path = "../agent_oxide/core/deepseek" }
+engine = { path = "../agent_oxide/core/engine" }
+memory = { path = "../agent_oxide/core/memory" }
+provider = { path = "../agent_oxide/core/provider" }
+tools = { path = "../agent_oxide/core/tools" }
+tools-macros = { path = "../agent_oxide/core/tools-macros" }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = "1"
 ```
 
-**`bins/tutorial/src/main.rs`:**
+> If you'd rather pull in the whole framework at once, `cargo add
+> agent_oxide` gives you the umbrella crate — every sub-crate re-exported
+> under one name.
+
+**`tutorial/src/main.rs`:**
 ```rust
 fn main() {
     println!("Tutorial binary ready!");
@@ -85,7 +90,7 @@ fn main() {
 Verify it builds:
 
 ```bash
-cargo build -p tutorial
+cargo build
 ```
 
 > **Done?** You have a clean canvas.  Let's write our first agent.
@@ -96,7 +101,7 @@ cargo build -p tutorial
 
 ### The Simplest Possible Agent
 
-Replace `bins/tutorial/src/main.rs` with:
+Replace `tutorial/src/main.rs` with:
 
 ```rust
 use deepseek::DeepSeekClient;
@@ -123,7 +128,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Run it:
 
 ```bash
-cargo run -p tutorial
+cargo run
 ```
 
 You'll see something like:
@@ -223,7 +228,7 @@ That's it!  Three parts:
 ### Our First Tool: Calculator
 
 Let's build a real calculator that handles arbitrary expressions.  Update
-`bins/tutorial/src/main.rs`:
+`tutorial/src/main.rs`:
 
 ```rust
 use deepseek::DeepSeekClient;
@@ -286,7 +291,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Run it and watch the agent use your tool:
 
 ```bash
-cargo run -p tutorial
+cargo run
 ```
 
 Under the hood, this is what happens:
@@ -806,7 +811,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### Step 3: Run It
 
 ```bash
-cargo run -p tutorial
+cargo run
 ```
 
 You'll see the agent work through each step, calling tools and building the
@@ -867,7 +872,7 @@ in depth:
 | Real tool implementations | loomis app: `bins/loomis/src/tools/` | See production-quality tools |
 | Sandbox system | `extensions/sandbox/src/` | Full sandbox defense in depth |
 | TUI implementation | loomis app: `bins/loomis/src/tui/` | ratatui-based terminal UI |
-| Agent assembly | loomis app: `bins/loomis/src/agent_setup.rs` | How the reference app wires everything |
+| Agent assembly | loomis app: `bins/loomis/src/app.rs` | How the reference app wires everything |
 | Compaction hooks | `extensions/compact/src/` | MicroCompact and MacroCompact |
 | DeepSeek client | `core/deepseek/src/` | SSE streaming implementation |
 | Engine core | `core/engine/src/agent.rs` | The ReAct loop in full detail |

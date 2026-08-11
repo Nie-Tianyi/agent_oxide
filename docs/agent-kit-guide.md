@@ -1,7 +1,7 @@
 # agent-kit / agent-macros Usage Guide
 
 This document explains how to use the NVIDIA OO Agents-style agent programming
-paradigm in Loomis. The paradigm is provided by two new crates:
+paradigm in Agent Oxide. The paradigm is provided by two new crates:
 
 | Crate | Location | Role |
 |-------|----------|------|
@@ -260,8 +260,8 @@ Mechanics:
 2. **The sandbox** — every tool call the LLM makes during `run()` goes through
    `SandboxHook` approval, quotas, and the audit log. Generation methods are
    unguarded.
-3. **Persistence / observability** — `.loomis/threads/` auto-save, full-chain
-   traces in `.loomis/logs/`, status-bar metrics — all hook pipeline features.
+3. **Persistence / observability** — `.agent/threads/` auto-save, full-chain
+   traces in `.agent/logs/`, status-bar metrics — all hook pipeline features.
 4. **Reuse of the existing toolset** — `read`/`shell`/`edit`/`grep` and friends
    mount on the engine's `EngineContext`; add the corresponding hooks via
    `BuildConfig` to get the same capabilities.
@@ -291,7 +291,7 @@ Notes:
 - **Order = registration order.** `extra_hooks` run in push order, after the
   derive-generated `ContextBlockHook` (from `#[context]` fields). Control the
   order yourself when it matters (e.g. sandbox last) — mirror the TUI's
-  registration order in `bins/loomis` (SystemPrompt → Observability →
+  registration order in `the reference app` (SystemPrompt → Observability →
   Persistence → Skills → PlanMode → Profile → Todo → Compact → Sandbox).
 - **Generation methods bypass the hook pipeline.** `agent.classify(...)` and
   friends never touch `extra_hooks`; only the `engine::Agent` produced by

@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 250" width="100%" height="100%">
+  <defs>
+    <style>
+      text {
+        font-family: 'Segoe UI', 'SF Pro', -apple-system, sans-serif;
+      }
+    </style>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#5B6ABF"/>
+    </marker>
+    <filter id="shadow" x="-5%" y="-10%" width="115%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000022"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="860" height="250" rx="12" fill="#F8F9FC"/>
+
+  <!-- Title -->
+  <text x="430" y="35" text-anchor="middle" font-size="20" font-weight="700" fill="#2D3748">UI 通信协议</text>
+
+  <!-- Left section -->
+  <text x="145" y="65" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">主线程 (同步 TUI)</text>
+  <line x1="30" y1="76" x2="260" y2="76" stroke="#E2E8F0" stroke-width="1.5"/>
+
+  <!-- Right section (symmetric: same 30px margin from right edge) -->
+  <text x="702" y="65" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">后台任务 (tokio::spawn)</text>
+  <line x1="590" y1="76" x2="830" y2="76" stroke="#E2E8F0" stroke-width="1.5"/>
+
+  <!-- ===== Row 1: cmd_tx → cmd_rx ===== -->
+  <!-- Left box -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="95" width="85" height="30" rx="6" fill="#FFFFFF" stroke="#5B6ABF" stroke-width="1.5"/>
+  </g>
+  <text x="72" y="115" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">cmd_tx</text>
+
+  <!-- Line to center text -->
+  <line x1="115" y1="110" x2="345" y2="110" stroke="#5B6ABF" stroke-width="1.5"/>
+
+  <!-- Center label -->
+  <text x="390" y="115" text-anchor="middle" font-size="13" font-weight="500" fill="#2D3748">TuiCommand</text>
+
+  <!-- Arrow to right box -->
+  <line x1="435" y1="110" x2="655" y2="110" stroke="#5B6ABF" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Right box -->
+  <g filter="url(#shadow)">
+    <rect x="660" y="95" width="85" height="30" rx="6" fill="#FFFFFF" stroke="#5B6ABF" stroke-width="1.5"/>
+  </g>
+  <text x="702" y="115" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">cmd_rx</text>
+
+  <!-- Subtitle -->
+  <text x="760" y="115" font-size="12" fill="#718096">(用户 → Agent)</text>
+
+  <!-- ===== Row 2: agent_rx ← agent_tx ===== -->
+  <!-- Left box -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="160" width="85" height="30" rx="6" fill="#FFFFFF" stroke="#5B6ABF" stroke-width="1.5"/>
+  </g>
+  <text x="72" y="180" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">agent_rx</text>
+
+  <!-- Arrow from center to left (reverse direction) -->
+  <line x1="345" y1="175" x2="115" y2="175" stroke="#5B6ABF" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Center label -->
+  <text x="390" y="180" text-anchor="middle" font-size="13" font-weight="500" fill="#2D3748">AgentEvent</text>
+
+  <!-- Line from right box to center -->
+  <line x1="655" y1="175" x2="435" y2="175" stroke="#5B6ABF" stroke-width="1.5"/>
+
+  <!-- Right box -->
+  <g filter="url(#shadow)">
+    <rect x="660" y="160" width="85" height="30" rx="6" fill="#FFFFFF" stroke="#5B6ABF" stroke-width="1.5"/>
+  </g>
+  <text x="702" y="180" text-anchor="middle" font-size="13" font-weight="600" fill="#5B6ABF">agent_tx</text>
+
+  <!-- Subtitle -->
+  <text x="760" y="180" font-size="12" fill="#718096">(Agent → 用户)</text>
+
+</svg>

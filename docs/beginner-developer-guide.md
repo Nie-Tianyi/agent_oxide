@@ -1,4 +1,4 @@
-# Loomis Beginner Developer Guide
+# Agent Oxide Beginner Developer Guide
 
 > **Build your first AI agent in 10 minutes.**  
 > No prior agent experience needed — just basic Rust (closures, async, `Arc`).
@@ -7,7 +7,7 @@
 
 ## Welcome
 
-Loomis is a **Rust agent framework** that turns an LLM into a fully autonomous
+Agent Oxide is a **Rust agent framework** that turns an LLM into a fully autonomous
 tool-using assistant.  Give it tools — a calculator, file reader, shell access,
 web search — and the LLM will use them to solve real problems, step by step.
 
@@ -413,7 +413,7 @@ provide useful tools and a clear system prompt.
 
 ## Chapter 5: Letting Your Agent Read Files
 
-Real agents need to interact with files.  Loomis provides `WorkspaceFs` — a
+Real agents need to interact with files.  Agent Oxide provides `WorkspaceFs` — a
 sandboxed file system that keeps the agent inside the workspace root.
 
 ### WorkspaceFs Basics
@@ -864,10 +864,10 @@ in depth:
 
 | What | Where | Why |
 |---|---|---|
-| Real tool implementations | `bins/loomis/src/tools/` | See production-quality tools |
-| Sandbox system | `bins/loomis/src/sandbox/` | Full sandbox defense in depth |
-| TUI implementation | `bins/loomis/src/tui/` | ratatui-based terminal UI |
-| Agent assembly | `bins/loomis/src/agent_setup.rs` | How loomis wires everything |
+| Real tool implementations | loomis app: `bins/loomis/src/tools/` | See production-quality tools |
+| Sandbox system | `extensions/sandbox/src/` | Full sandbox defense in depth |
+| TUI implementation | loomis app: `bins/loomis/src/tui/` | ratatui-based terminal UI |
+| Agent assembly | loomis app: `bins/loomis/src/agent_setup.rs` | How the reference app wires everything |
 | Compaction hooks | `extensions/compact/src/` | MicroCompact and MacroCompact |
 | DeepSeek client | `core/deepseek/src/` | SSE streaming implementation |
 | Engine core | `core/engine/src/agent.rs` | The ReAct loop in full detail |
@@ -890,4 +890,4 @@ in depth:
 ---
 
 **Happy building!**  If you have questions, check the [Senior Developer Guide](senior-developer-guide.md)
-or explore the source code in `core/`, `extensions/`, and `bins/loomis/`.
+or explore the source code in `core/`, `extensions/`, and `extensions/`.

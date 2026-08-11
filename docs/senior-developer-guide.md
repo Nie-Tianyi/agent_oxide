@@ -1,4 +1,4 @@
-# Loomis Senior Developer Guide
+# Agent Oxide Senior Developer Guide
 
 > **In-depth reference for experienced Rust developers.**  
 > Covers architecture internals, trait implementations, advanced patterns, and design decisions.
@@ -45,8 +45,8 @@ agent_oxide/
 │   ├── sandbox/            # WorkspaceFs, ShellFilter, SandboxHook, etc.
 │   ├── skills/             # SkillDef, SkillRegistry, ActiveSkills
 │   └── subagent/           # SubagentTool — spawn child agents as tools
-└── bins/
-    └── loomis/             # Binary — tools, sandbox, hooks, TUI, main.rs
+└── (your app)
+    └── loomis/             # Reference app: concrete tools, sandbox, TUI, main.rs
 ```
 
 ### Dependency Graph (no cycles)
@@ -66,7 +66,7 @@ provider ───────────────────────�
     │       ↑
     ├── subagent ──────────────── (uses provider + tools + engine + memory)
     │       ↑
-    └── loomis (bin) ──────────── (uses everything)
+    └── your-app (bin) ──────────── (uses everything)
 ```
 
 ### Core Abstractions Table
@@ -213,10 +213,10 @@ pub struct Delta {
 
 **Step 1: Understand the mapping.**
 
-Your job is to convert between Loomis's `CompletionRequest` / `CompletionResponse`
+Your job is to convert between Agent Oxide's `CompletionRequest` / `CompletionResponse`
 and your provider's native API format.  The key translation points:
 
-| Loomis Type | → | Your Provider |
+| Agent Oxide Type | → | Your Provider |
 |---|---|---|
 | `CompletionRequest.messages` | → | Provider's chat messages array |
 | `CompletionRequest.tools` | → | Provider's tools/functions list |
@@ -250,7 +250,7 @@ impl AnthropicClient {
         })
     }
 
-    /// Convert Loomis messages to Anthropic's format.
+    /// Convert Agent Oxide messages to Anthropic's format.
     fn convert_messages(&self, messages: &[Message]) -> Vec<serde_json::Value> {
         messages
             .iter()
@@ -268,7 +268,7 @@ impl AnthropicClient {
             .collect()
     }
 
-    /// Convert Loomis ToolDefs to Anthropic's tool format.
+    /// Convert Agent Oxide ToolDefs to Anthropic's tool format.
     fn convert_tools(&self, tools: &[provider::ToolDef]) -> Vec<serde_json::Value> {
         tools
             .iter()
@@ -282,7 +282,7 @@ impl AnthropicClient {
             .collect()
     }
 
-    /// Convert Anthropic's response to Loomis's CompletionResponse.
+    /// Convert Anthropic's response to Agent Oxide's CompletionResponse.
     fn convert_response(&self, body: serde_json::Value) -> Result<CompletionResponse, ProviderError> {
         let content_block = &body["content"][0];
         let mut content = String::new();
@@ -317,7 +317,7 @@ impl AnthropicClient {
         })
     }
 
-    /// Convert Anthropic's SSE event to Loomis's StreamChunk.
+    /// Convert Anthropic's SSE event to Agent Oxide's StreamChunk.
     fn convert_sse_event(&self, event: serde_json::Value) -> Result<Option<StreamChunk>, ProviderError> {
         match event["type"].as_str() {
             Some("content_block_delta") => {
@@ -1362,7 +1362,7 @@ NO → Reject with FsError::PathNotInWorkspace
 ### Configuration File
 
 ```toml
-# .loomis/config.toml
+# .agent/config.toml
 [filesystem]
 max_read_bytes = 1_048_576     # 1 MiB
 max_write_bytes = 524_288      # 512 KiB
@@ -1392,7 +1392,7 @@ max_total_operations = 10_000
 
 [audit]
 enabled = true
-log_file = ".loomis/audit.jsonl"
+log_file = ".agent/audit.jsonl"
 ```
 
 Missing file → safe defaults.  All fields are optional.
@@ -1425,7 +1425,7 @@ Covered in §8.  All file paths are canonicalized and bound-checked.
 ### Layer 2: ShellFilter (Command Classification)
 
 ```rust
-// bins/loomis/src/sandbox/shell_filter.rs (conceptual)
+// extensions/src/sandbox/shell_filter.rs (conceptual)
 enum Classification {
     AutoApprove,            // Safe prefix match
     Deny(String),           // Matches deny pattern
@@ -1762,7 +1762,7 @@ let memory = load_conversation(workspace, "debug-session")?;
 
 ### File Formats
 
-Two files per thread in `.loomis/threads/`:
+Two files per thread in `.agent/threads/`:
 
 **`{name}.json`:** Machine-readable, complete message history with all fields.
 
@@ -1804,7 +1804,7 @@ Rust is a systems programming language...
 
 ### Auto-Save
 
-In `bins/loomis/`, conversation is auto-saved after each agent turn.  The
+In `extensions/`, conversation is auto-saved after each agent turn.  The
 `sandbox_hook` triggers the save in `on_run_finish`.
 
 ---
@@ -2002,10 +2002,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 | Want to... | Read this file |
 |---|---|
 | Understand the ReAct loop | `core/engine/src/agent.rs` |
-| See how tools are defined | `bins/loomis/src/tools/calculator.rs` |
-| See how sandbox works | `bins/loomis/src/sandbox/` |
-| See how TUI renders events | `bins/loomis/src/tui/` |
-| See how agent is assembled | `bins/loomis/src/agent_setup.rs` |
+| See how tools are defined | `extensions/src/tools/calculator.rs` |
+| See how sandbox works | `extensions/src/sandbox/` |
+| See how TUI renders events | `extensions/src/tui/` |
+| See how agent is assembled | `extensions/src/agent_setup.rs` |
 | Understand SSE streaming | `core/deepseek/src/client.rs` |
 | Understand compaction | `extensions/compact/src/compact.rs` |
 | Understand subagents | `extensions/subagent/src/tool.rs` |

@@ -1,6 +1,6 @@
 # 沙箱架构文档
 
-本文档描述了 Loomis 中一个 LLM 工具调用从发起到执行完毕所经过的完整安全检查链。
+本文档描述了 Agent Oxide 中一个 LLM 工具调用从发起到执行完毕所经过的完整安全检查链。
 
 ---
 
@@ -36,7 +36,7 @@
 4. Fallthrough        →  以上都不匹配        → RequiresApproval
 ```
 
-代码位置：[`bins/loomis/src/sandbox/shell_filter.rs`](../bins/loomis/src/sandbox/shell_filter.rs#L77-L117)
+代码位置：[`extensions/sandbox/src/shell_filter.rs`](../extensions/sandbox/src/shell_filter.rs#L77-L117)
 
 ---
 
@@ -55,8 +55,8 @@
 ![Shell调用权限检查](./assets/shellexe.png)
 
 代码位置：
-- ShellTool: [`bins/loomis/src/tools/shell.rs`](../bins/loomis/src/tools/shell.rs)
-- EnvSanitizer: [`bins/loomis/src/sandbox/env_sanitizer.rs`](../bins/loomis/src/sandbox/env_sanitizer.rs)
+- ShellTool: [`extensions/sandbox/src/shell_filter.rs`](../extensions/src/tools/shell.rs)
+- EnvSanitizer: [`extensions/sandbox/src/env_sanitizer.rs`](../extensions/sandbox/src/env_sanitizer.rs)
 
 ---
 
@@ -65,8 +65,8 @@
 ![记录审查结果](./assets/auditlogger.png)
 
 代码位置：
-- ResourceTracker: [`bins/loomis/src/sandbox/resource_tracker.rs`](../bins/loomis/src/sandbox/resource_tracker.rs)
-- AuditLogger: [`bins/loomis/src/sandbox/audit_logger.rs`](../bins/loomis/src/sandbox/audit_logger.rs)
+- ResourceTracker: [`extensions/sandbox/src/resource_tracker.rs`](../extensions/sandbox/src/resource_tracker.rs)
+- AuditLogger: [`extensions/sandbox/src/audit_logger.rs`](../extensions/sandbox/src/audit_logger.rs)
 
 ---
 
@@ -93,7 +93,7 @@
 | 15 | `Watchdog` | 进程超时杀 | 进程终止 |
 | 16 | 输出截断 | stdout+stderr ≤ 100KB | 截断并标记 |
 
-检查 3-5 的决策由 `.loomis/config.toml` 控制：
+检查 3-5 的决策由 `.agent/config.toml` 控制：
 
 ```toml
 [sandbox.shell.auto_approve]
@@ -116,8 +116,8 @@ patterns = ["rm -rf\\s+(/|~)", "sudo\\s+", "shutdown", ...]
 
 3. **纵深防御** — ShellFilter 在 Hook 层 (`before_tool_call`) 和 ShellTool 层 (`execute`) 各执行一次，互为备份。
 
-4. **全链路审计** — 从分类 → 决策 → 执行 → 结果，每一步都记录到 `.loomis/audit.jsonl`，事后可追溯。
+4. **全链路审计** — 从分类 → 决策 → 执行 → 结果，每一步都记录到 `.agent/audit.jsonl`，事后可追溯。
 
 5. **同步执行** — `Tool::execute` 和 `AgentHook` 方法都是同步的。Shell 命令阻塞 tokio worker 线程直到完成（或超时）。对于短命令（<30s）这是可接受的；长期来看可以迁移到 `spawn_blocking`。
 
-6. **配置即策略** — 所有安全检查的行为都不硬编码在代码中，而是由 `SandboxConfig` 驱动。用户可以通过 `.loomis/config.toml` 调节安全等级。
+6. **配置即策略** — 所有安全检查的行为都不硬编码在代码中，而是由 `SandboxConfig` 驱动。用户可以通过 `.agent/config.toml` 调节安全等级。

@@ -13,13 +13,12 @@ pub(crate) fn doc_comment(attrs: &[Attribute]) -> String {
         if !attr.path().is_ident("doc") {
             continue;
         }
-        if let Meta::NameValue(nv) = &attr.meta {
-            if let Expr::Lit(ExprLit {
+        if let Meta::NameValue(nv) = &attr.meta
+            && let Expr::Lit(ExprLit {
                 lit: Lit::Str(s), ..
             }) = &nv.value
-            {
-                parts.push(s.value());
-            }
+        {
+            parts.push(s.value());
         }
     }
     parts.join("\n")

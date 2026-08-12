@@ -360,14 +360,14 @@ fn compact_messages(
     // The arguments let the placeholder tell the agent *what* was cleared.
     let mut id_to_call: HashMap<String, (String, String)> = HashMap::new();
     for msg in messages.iter() {
-        if msg.role == Role::Assistant {
-            if let Some(ref tool_calls) = msg.tool_calls {
-                for tc in tool_calls {
-                    id_to_call.insert(
-                        tc.id.clone(),
-                        (tc.function.name.clone(), tc.function.arguments.clone()),
-                    );
-                }
+        if msg.role == Role::Assistant
+            && let Some(ref tool_calls) = msg.tool_calls
+        {
+            for tc in tool_calls {
+                id_to_call.insert(
+                    tc.id.clone(),
+                    (tc.function.name.clone(), tc.function.arguments.clone()),
+                );
             }
         }
     }
@@ -386,13 +386,13 @@ fn compact_messages(
         if is_compacted(msg) {
             continue;
         }
-        if let Some(ref tool_call_id) = msg.tool_call_id {
-            if let Some((tool_name, _)) = id_to_call.get(tool_call_id) {
-                if compactable.contains(tool_name) && compactable_count_from_end < keep_recent {
-                    should_keep[i] = true;
-                    compactable_count_from_end += 1;
-                }
-            }
+        if let Some(ref tool_call_id) = msg.tool_call_id
+            && let Some((tool_name, _)) = id_to_call.get(tool_call_id)
+            && compactable.contains(tool_name)
+            && compactable_count_from_end < keep_recent
+        {
+            should_keep[i] = true;
+            compactable_count_from_end += 1;
         }
     }
 
@@ -404,13 +404,12 @@ fn compact_messages(
         if is_compacted(msg) {
             continue;
         }
-        if let Some(ref tool_call_id) = msg.tool_call_id {
-            if let Some((tool_name, arguments)) = id_to_call.get(tool_call_id) {
-                if compactable.contains(tool_name) {
-                    msg.content = format_compact_placeholder(tool_name, arguments);
-                    compacted += 1;
-                }
-            }
+        if let Some(ref tool_call_id) = msg.tool_call_id
+            && let Some((tool_name, arguments)) = id_to_call.get(tool_call_id)
+            && compactable.contains(tool_name)
+        {
+            msg.content = format_compact_placeholder(tool_name, arguments);
+            compacted += 1;
         }
     }
 

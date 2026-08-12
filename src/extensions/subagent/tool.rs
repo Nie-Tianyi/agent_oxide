@@ -365,19 +365,19 @@ fn build_subagent_memory(config: &SubagentConfig, parent_memory: &SharedMemory) 
 
     // Optional context inheritance — copy the last N non-System messages
     // from the parent's conversation.
-    if let Some(n) = config.inherit_context_messages {
-        if n > 0 {
-            let parent = parent_memory.read().expect("parent memory lock");
-            // Collect all non-System messages, then take the last `n`.
-            let all_non_system: Vec<&Message> = parent
-                .messages()
-                .iter()
-                .filter(|m| m.role != Role::System)
-                .collect();
-            let start = all_non_system.len().saturating_sub(n);
-            for msg in &all_non_system[start..] {
-                memory.push((*msg).clone());
-            }
+    if let Some(n) = config.inherit_context_messages
+        && n > 0
+    {
+        let parent = parent_memory.read().expect("parent memory lock");
+        // Collect all non-System messages, then take the last `n`.
+        let all_non_system: Vec<&Message> = parent
+            .messages()
+            .iter()
+            .filter(|m| m.role != Role::System)
+            .collect();
+        let start = all_non_system.len().saturating_sub(n);
+        for msg in &all_non_system[start..] {
+            memory.push((*msg).clone());
         }
     }
 

@@ -207,17 +207,17 @@ impl WorkspaceFs {
             // Compare file identity: same length + same modification time
             // is a decent heuristic for "same file" without platform-specific
             // inode APIs.
-            if let Ok(re_meta) = re_canon.metadata() {
-                if meta.len() != re_meta.len() || meta.modified().ok() != re_meta.modified().ok() {
-                    tracing::error!(
-                        path = %path,
-                        "TOCTOU re-check failed: file identity changed between checks — possible symlink swap"
-                    );
-                    return Err(FsError::WorkspaceEscape(format!(
-                        "'{}' file identity changed between checks — possible symlink swap",
-                        path
-                    )));
-                }
+            if let Ok(re_meta) = re_canon.metadata()
+                && (meta.len() != re_meta.len() || meta.modified().ok() != re_meta.modified().ok())
+            {
+                tracing::error!(
+                    path = %path,
+                    "TOCTOU re-check failed: file identity changed between checks — possible symlink swap"
+                );
+                return Err(FsError::WorkspaceEscape(format!(
+                    "'{}' file identity changed between checks — possible symlink swap",
+                    path
+                )));
             }
         }
 
@@ -334,13 +334,12 @@ impl WorkspaceFs {
         }
 
         // ── Hidden file protection ──────────────────────────────────────
-        if self.forbid_hidden_file_writes {
-            if let Some(name) = resolved.file_name().and_then(|n| n.to_str()) {
-                if name.starts_with('.') {
-                    tracing::warn!(path = %path, "Write blocked: hidden file");
-                    return Err(FsError::HiddenFileBlocked(path.to_string()));
-                }
-            }
+        if self.forbid_hidden_file_writes
+            && let Some(name) = resolved.file_name().and_then(|n| n.to_str())
+            && name.starts_with('.')
+        {
+            tracing::warn!(path = %path, "Write blocked: hidden file");
+            return Err(FsError::HiddenFileBlocked(path.to_string()));
         }
 
         // ── Serialize concurrent writes to the same file ───────────────

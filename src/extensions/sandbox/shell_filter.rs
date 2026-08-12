@@ -88,16 +88,16 @@ impl ShellFilter {
         let binary = Self::extract_binary(command);
 
         // 1. Strict allowlist mode
-        if let Some(ref allowed) = self.allow_binaries {
-            if !allowed.iter().any(|a| a == binary) {
-                tracing::debug!(
-                    binary = %binary,
-                    "Classified shell command: blocked (not in allowed-commands list)"
-                );
-                return CommandVerdict::Blocked {
-                    reason: format!("'{binary}' is not in the allowed-commands list"),
-                };
-            }
+        if let Some(ref allowed) = self.allow_binaries
+            && !allowed.iter().any(|a| a == binary)
+        {
+            tracing::debug!(
+                binary = %binary,
+                "Classified shell command: blocked (not in allowed-commands list)"
+            );
+            return CommandVerdict::Blocked {
+                reason: format!("'{binary}' is not in the allowed-commands list"),
+            };
         }
 
         // 2. Deny patterns (checked against the full command string)

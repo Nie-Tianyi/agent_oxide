@@ -419,16 +419,16 @@ impl<C: LLMClient> Agent<C> {
         tx: &Option<mpsc::UnboundedSender<AgentEvent>>,
     ) {
         // ── Emit ToolCall events before execution ──
-        if let Some(tx) = tx {
-            if let Some(ref tool_calls) = assistant_msg.tool_calls {
-                for tc in tool_calls {
-                    let _ = tx.send(AgentEvent::ToolCall {
-                        id: tc.id.clone(),
-                        name: tc.function.name.clone(),
-                        arguments: tc.function.arguments.clone(),
-                        origin: CallOrigin::Llm,
-                    });
-                }
+        if let Some(tx) = tx
+            && let Some(ref tool_calls) = assistant_msg.tool_calls
+        {
+            for tc in tool_calls {
+                let _ = tx.send(AgentEvent::ToolCall {
+                    id: tc.id.clone(),
+                    name: tc.function.name.clone(),
+                    arguments: tc.function.arguments.clone(),
+                    origin: CallOrigin::Llm,
+                });
             }
         }
 
@@ -920,10 +920,10 @@ impl<C: LLMClient> Agent<C> {
 
             // Emit tokens for TUI display (non-streaming: single bulk event).
             if let Some(ref tx) = tx {
-                if let Some(ref r) = reasoning {
-                    if !r.is_empty() {
-                        let _ = tx.send(AgentEvent::ReasoningToken(r.clone()));
-                    }
+                if let Some(ref r) = reasoning
+                    && !r.is_empty()
+                {
+                    let _ = tx.send(AgentEvent::ReasoningToken(r.clone()));
                 }
                 let _ = tx.send(AgentEvent::Token(content.clone()));
             }

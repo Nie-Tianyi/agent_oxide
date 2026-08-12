@@ -128,15 +128,15 @@ impl SandboxConfig {
     /// defaults.
     fn try_write_default(config_path: &std::path::Path, config: &Self) {
         // Ensure the parent directory exists.
-        if let Some(parent) = config_path.parent() {
-            if let Err(e) = std::fs::create_dir_all(parent) {
-                tracing::warn!(
-                    dir = %parent.display(),
-                    error = %e,
-                    "Cannot create config directory; config template not written",
-                );
-                return;
-            }
+        if let Some(parent) = config_path.parent()
+            && let Err(e) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(
+                dir = %parent.display(),
+                error = %e,
+                "Cannot create config directory; config template not written",
+            );
+            return;
         }
 
         // Serialise with pretty formatting so the file is human-editable.

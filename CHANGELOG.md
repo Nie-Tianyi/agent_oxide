@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-08-13
+
+### Fixed
+
+- **MSRV raised to 1.88** — required by `time` 0.3.47+ (patched
+  RUSTSEC-2026-0009, an RFC 2822 parse stack-exhaustion DoS; unpatched
+  versions could not be pinned without the bump). The 0.5.0 release's
+  declared MSRV of 1.85 was too low once `time` resolved fresh.
+- Collapsed nested `if-let` chains flagged by newer clippy
+  (`collapsible_if`); no behavioral change.
+
 ## [Unreleased]
 
 ### Added

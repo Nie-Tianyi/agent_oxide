@@ -52,7 +52,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nie-Tianyi/agent_oxide"
 keywords = ["agent", "llm", "react", "framework", "ai"]
 categories = ["asynchronous", "development-tools"]
-rust-version = "1.85"
+rust-version = "1.88"
 
 [workspace.dependencies]
 reqwest = { version = "0.13.4", features = ["json", "stream"] }

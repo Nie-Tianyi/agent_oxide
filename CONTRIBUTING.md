@@ -5,8 +5,8 @@ submit changes to this repository.
 
 ## Prerequisites
 
-- **Rust 1.85 or newer** (the workspace targets `edition = "2024"`; the
-  declared MSRV is `1.85`, enforced by CI).
+- **Rust 1.88 or newer** (the workspace targets `edition = "2024"`; the
+  declared MSRV is `1.88`, enforced by CI).
 - A working `cargo` toolchain with `rustfmt` and `clippy` components.
 
 ## Getting started

@@ -4,11 +4,14 @@
 //! abstraction, tool system, and a rich set of extensions (sandbox,
 //! persistence, skills, observability, subagents).
 //!
-//! This umbrella crate re-exports the whole framework under one name:
+//! Everything lives in one crate; the [`proc_macro`] companion
+//! `agent-oxide-macros` supplies `#[derive(Agent)]`, `#[agent_impl]`, and
+//! `#[tool]`:
 //!
 //! ```toml
 //! [dependencies]
 //! agent_oxide = "0.5"
+//! agent-oxide-macros = "0.5"
 //! ```
 //!
 //! # Quick start
@@ -29,30 +32,30 @@
 //! # }
 //! ```
 //!
-//! # Crate layout
+//! # Module layout
 //!
-//! | Module | Crate | Role |
-//! |--------|-------|------|
-//! | [`provider`] | `provider` | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
-//! | [`deepseek`] | `deepseek` | DeepSeek API client |
-//! | [`memory`] | `memory` | Conversation memory buffer |
-//! | [`tools`] | `tools` | `Tool` trait, `ToolRegistry`, `#[tool]` macro |
-//! | [`engine`] | `engine` | Agent ReAct loop, `AgentHook`, `AgentEvent` |
-//! | [`util`] | `util` | Shared utilities (`iso8601_now`) |
-//! | [`agent_kit`] | `agent-kit` | NVIDIA OO Agents-style ergonomics |
-//! | [`hooks`] | `hooks` | Compaction hooks (micro/macro) |
-//! | [`observability`] | `observability` | Full-chain tracing |
-//! | [`persistence`] | `persistence` | Conversation save/load |
-//! | [`sandbox`] | `sandbox` | 5-layer security sandbox |
-//! | [`skills`] | `skills` | Skill discovery & registry |
-//! | [`subagent`] | `subagent` | Spawn child agents as tools |
+//! | Module | Role |
+//! |--------|------|
+//! | [`provider`] | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
+//! | [`deepseek`] | DeepSeek API client |
+//! | [`memory`] | Conversation memory buffer |
+//! | [`tools`] | `Tool` trait, `ToolRegistry`, `#[tool]` macro |
+//! | [`engine`] | Agent ReAct loop, `AgentHook`, `AgentEvent` |
+//! | [`util`] | Shared utilities (`iso8601_now`) |
+//! | [`agent_kit`] | NVIDIA OO Agents-style ergonomics |
+//! | [`hooks`] | Compaction hooks (micro/macro) |
+//! | [`observability`] | Full-chain tracing |
+//! | [`persistence`] | Conversation save/load |
+//! | [`sandbox`] | 5-layer security sandbox |
+//! | [`skills`] | Skill discovery & registry |
+//! | [`subagent`] | Spawn child agents as tools |
 
 #![deny(unsafe_code)]
 
-// ── Core ────────────────────────────────────────────────────────────────────────
+// ── Core modules ──────────────────────────────────────────────────────────────
 
 /// LLM provider abstraction — `LLMClient` trait and shared types.
-pub use provider;
+pub mod provider;
 pub use provider::{
     Choice, ChoiceMessage, ChunkChoice, CompletionRequest, CompletionResponse, Delta, FinishReason,
     FunctionDef, LLMClient, Message, ProviderError, ReasoningEffort, Role, StreamChunk, ToolCall,
@@ -60,22 +63,19 @@ pub use provider::{
 };
 
 /// DeepSeek API client — implements `provider::LLMClient`.
-pub use deepseek;
+pub mod deepseek;
 pub use deepseek::{DeepSeekClient, DeepSeekError, DeepSeekRequest, DeepSeekStream};
 
 /// Conversation memory management.
-pub use memory;
+pub mod memory;
 pub use memory::{Memory, PendingHints, SharedMemory};
 
 /// Tool abstraction — `Tool` trait, `ToolRegistry`, and JSON Schema generation.
-pub use tools;
+pub mod tools;
 pub use tools::{Progress, ProgressStream, Tool, ToolError, ToolRegistry, tool_to_def};
 
-/// The `#[tool]` attribute macro.
-pub use tools_macros::tool;
-
 /// Agent engine — ReAct loop, `AgentHook` lifecycle, `AgentEvent` streaming.
-pub use engine;
+pub mod engine;
 pub use engine::{
     Agent, AgentBuilder, AgentError, AgentEvent, AgentHook, CallOrigin, EngineContext,
     EngineContextBuilder, InterventionRequest, InterventionResponse, ResponseRouter, RunOutcome,
@@ -83,29 +83,37 @@ pub use engine::{
 };
 
 /// Shared workspace utilities.
-pub use util;
+pub mod util;
 pub use util::iso8601_now;
 
-// ── Extensions ──────────────────────────────────────────────────────────────────
+// ── Extension modules ─────────────────────────────────────────────────────────
 
 /// NVIDIA OO Agents-style ergonomics on top of the core API.
-pub use agent_kit;
+pub mod agent_kit;
 pub use agent_kit::{AgentAssembler, AgentBlueprint, BuildConfig, ContextBlock, ContextBlockHook};
-/// The `#[derive(Agent)]` / `#[agent_impl]` proc macros.
-pub use agent_macros::Agent;
 
 /// Common hooks — compaction, approval, etc.
-pub use hooks;
+pub mod hooks;
 /// Full-chain tracing — `TraceEvent`, `TraceStore`, `RunMetrics`.
-pub use observability;
+pub mod observability;
 /// Conversation persistence — save/load threads.
-pub use persistence;
+pub mod persistence;
 /// 5-layer security sandbox — `WorkspaceFs`, `ShellFilter`, `SandboxHook`, …
-pub use sandbox;
+pub mod sandbox;
 /// Skill definitions, discovery, and registry.
-pub use skills;
+pub mod skills;
 /// Subagent as Tool — spawn autonomous sub-agents.
-pub use subagent;
+pub mod subagent;
+
+// ── Proc macros and their support crates ──────────────────────────────────────
+
+/// The `#[derive(Agent)]` / `#[agent_impl]` / `#[tool]` proc macros.
+pub use agent_oxide_macros::{Agent, agent_impl, tool};
+
+/// Re-exported for macro-generated code and ergonomic derives.
+pub use schemars;
+pub use serde;
+pub use serde_json;
 
 // ── Prelude ─────────────────────────────────────────────────────────────────────
 
@@ -113,7 +121,7 @@ pub use subagent;
 pub mod prelude {
     pub use crate::{
         Agent, AgentBuilder, AgentHook, DeepSeekClient, LLMClient, Memory, Message, Role,
-        SharedMemory, Tool, ToolRegistry, agent_kit, deepseek, engine, hooks, memory,
+        SharedMemory, Tool, ToolRegistry, agent_impl, agent_kit, deepseek, engine, hooks, memory,
         observability, persistence, provider, sandbox, skills, subagent, tool, tools, util,
     };
 }

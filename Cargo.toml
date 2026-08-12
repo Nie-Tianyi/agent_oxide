@@ -2,42 +2,47 @@
 name = "agent_oxide"
 version = "0.5.0"
 edition = "2024"
-description = "Agent Oxide — a modular agent framework for Rust (ReAct engine, LLM providers, tools, sandbox, persistence, skills)"
+description = "Agent Oxide — a modular agent framework for Rust (ReAct engine, LLM providers, tools, sandbox, persistence, skills, NOOA ergonomics)"
 license.workspace = true
 repository.workspace = true
 keywords.workspace = true
 categories.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+# Proc macros — #[derive(Agent)], #[agent_impl], #[tool].
+agent-oxide-macros = { version = "0.5.0", path = "agent_oxide-macros" }
+futures-core = { workspace = true }
+futures-executor = { workspace = true }
+futures-util = { workspace = true }
+glob = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+schemars = { workspace = true }
+# `rc` is needed for `Arc<T>: Serialize` (serde moved Rc/Arc impls behind
+# the optional `rc` feature) — `#[context(dynamic)]` fields are typically
+# shared via `Arc<RwLock<...>>`.
+serde = { workspace = true, features = ["rc"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+
 [dev-dependencies]
 criterion = "0.5"
+futures-util = { workspace = true }
 serde_json = { workspace = true }
+tempfile = { workspace = true }
+tokio = { workspace = true }
 
 [[bench]]
 name = "bench"
 harness = false
 
-[dependencies]
-# ── Core crates ──────────────────────────────────────────────────────────
-provider = { version = "0.5.0", path = "core/provider" }
-deepseek = { version = "0.5.0", path = "core/deepseek" }
-memory = { version = "0.5.0", path = "core/memory" }
-tools = { version = "0.5.0", path = "core/tools" }
-tools-macros = { version = "0.5.0", path = "core/tools-macros" }
-engine = { version = "0.5.0", path = "core/engine" }
-util = { version = "0.5.0", path = "core/util" }
-# ── Extension crates ─────────────────────────────────────────────────────
-agent-kit = { version = "0.5.0", path = "extensions/agent-kit" }
-agent-macros = { version = "0.5.0", path = "extensions/agent-macros" }
-hooks = { version = "0.5.0", path = "extensions/compact" }
-observability = { version = "0.5.0", path = "extensions/observability" }
-persistence = { version = "0.5.0", path = "extensions/persistence" }
-sandbox = { version = "0.5.0", path = "extensions/sandbox" }
-skills = { version = "0.5.0", path = "extensions/skills" }
-subagent = { version = "0.5.0", path = "extensions/subagent" }
-
 [workspace]
-members = ["core/*", "extensions/*"]
+members = ["agent_oxide-macros"]
 resolver = "2"
 
 [workspace.package]

@@ -13,24 +13,25 @@ walk-through that builds the code step by step.
 
 ```toml
 [dependencies]
-agent-kit = { path = "extensions/agent-kit" }
-agent-macros = { path = "extensions/agent-macros" }
-deepseek = { path = "core/deepseek" }
+agent_oxide = "0.5"
+agent-oxide-macros = "0.5"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-- `agent-macros` — the two proc macros: `#[derive(Agent)]` + `#[agent_impl]`.
-- `agent-kit` — the runtime (`AgentBlueprint`, `Strategy`, `BuildConfig`).
-- `deepseek` — the reference `LLMClient` implementation.
+- `agent-oxide-macros` — the three proc macros: `#[derive(Agent)]` +
+  `#[agent_impl]` + `#[tool]`.
+- `agent_oxide` — everything else: the runtime
+  (`agent_oxide::agent_kit::{AgentBlueprint, Strategy, BuildConfig}`) and the
+  reference `DeepSeekClient`.
 
-All macro-generated code resolves its paths through `agent_kit::...`, so you
-do **not** need direct dependencies on `core/provider`, `core/tools`, or
-`core/engine`.
+All macro-generated code resolves its paths through `agent_oxide::...`, so
+you do **not** need direct dependencies on serde, schemars, or any framework
+module beyond `agent_oxide` itself.
 
 ## Step 1 — Create the agent struct: the struct IS the agent
 
 ```rust,ignore
-use agent_macros::{Agent, agent_impl};
+use agent_oxide::{Agent, agent_impl};
 
 /// You are an inventory-management agent. Query real stock and prices with
 /// your tools — never guess.
@@ -51,7 +52,7 @@ struct InventoryAgent {
 ```rust,ignore
 use std::collections::HashMap;
 
-use deepseek::DeepSeekClient;
+use agent_oxide::deepseek::DeepSeekClient;
 
 #[derive(Clone, Agent)]
 struct InventoryAgent {
@@ -109,12 +110,12 @@ async fn can_fulfill_order(&self, items: Vec<String>, budget: f64) -> OrderResul
 ## Step 5 — Structured output (the Pydantic equivalent)
 
 ```rust,ignore
-use agent_kit::serde::{Deserialize, Serialize};
-use agent_kit::schemars::JsonSchema;
+use agent_oxide::serde::{Deserialize, Serialize};
+use agent_oxide::schemars::JsonSchema;
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(crate = "agent_kit::serde")]
-#[schemars(crate = "agent_kit::schemars")]
+#[serde(crate = "agent_oxide::agent_kit::serde")]
+#[schemars(crate = "agent_oxide::agent_kit::schemars")]
 struct OrderResult {
     can_fulfill: bool,
     total_cost: f64,
@@ -168,10 +169,10 @@ println!("{answer}");
 ```rust,ignore
 use std::collections::HashMap;
 
-use agent_kit::schemars::JsonSchema;
-use agent_kit::serde::{Deserialize, Serialize};
-use agent_macros::{Agent, agent_impl};
-use deepseek::DeepSeekClient;
+use agent_oxide::schemars::JsonSchema;
+use agent_oxide::serde::{Deserialize, Serialize};
+use agent_oxide::{Agent, agent_impl};
+use agent_oxide::deepseek::DeepSeekClient;
 
 /// You are an inventory-management agent. Query real stock and prices with
 /// your tools — never guess.
@@ -183,8 +184,8 @@ struct InventoryAgent {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
-#[serde(crate = "agent_kit::serde")]
-#[schemars(crate = "agent_kit::schemars")]
+#[serde(crate = "agent_oxide::agent_kit::serde")]
+#[schemars(crate = "agent_oxide::agent_kit::schemars")]
 struct Item {
     name: String,
     stock: i32,
@@ -192,8 +193,8 @@ struct Item {
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(crate = "agent_kit::serde")]
-#[schemars(crate = "agent_kit::schemars")]
+#[serde(crate = "agent_oxide::agent_kit::serde")]
+#[schemars(crate = "agent_oxide::agent_kit::schemars")]
 struct OrderResult {
     can_fulfill: bool,
     total_cost: f64,

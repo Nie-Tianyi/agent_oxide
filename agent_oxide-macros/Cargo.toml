@@ -1,0 +1,18 @@
+[package]
+name = "agent-oxide-macros"
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+edition = "2024"
+description = "Proc macros for Agent Oxide — #[derive(Agent)], #[agent_impl], and #[tool]"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = { version = "3", features = ["full", "extra-traits"] }
+quote = "1"
+proc-macro2 = "1"

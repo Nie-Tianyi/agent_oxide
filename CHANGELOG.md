@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EnvSanitizer`, process watchdog.
 - **`subagent`** — `SubagentTool`, spawning isolated child agents as a tool,
   with tool filtering to prevent recursion.
-- **`agent-kit` / `agent-macros`** — NOOA (NVIDIA OO Agents-style)
+- **`agent_oxide::agent_kit` / `agent_oxide-macros`** — NOOA (NVIDIA OO Agents-style)
   ergonomics: `#[derive(Agent)]` + `#[agent_impl]` map class doc = system
   prompt, sync methods = tools, async methods = LLM generations,
   Pydantic-style returns = structured output, `#[strategy(...)]`,
@@ -47,5 +47,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Documentation** — README with four-layer architecture design, NOOA
   guide, Harness/UI guide, beginner guide, senior guide, sandbox
   architecture.
+
+### Changed
+
+- **16 crates → 2** — the workspace is now a single `agent_oxide` crate
+  (all modules under `src/`) plus one proc-macro companion
+  `agent-oxide-macros` (`#[derive(Agent)]`, `#[agent_impl]`, `#[tool]`).
+  The old `core/` and `extensions/` sub-crates were merged; every public
+  type is reachable under `agent_oxide::…` with no behavior change. The
+  internal `use provider::…`-style imports became `crate::…` module paths.
+- **Macro-generated paths** — `#[tool]` output references
+  `::agent_oxide::tools::…` / `::agent_oxide::serde_json::…`, and
+  `#[derive(Agent)]` / `#[agent_impl]` reference `agent_oxide::agent_kit::…`
+  (including `agent_oxide::agent_kit::serde` / `schemars` re-exports), so
+  consumers only need the two crates on crates.io.
 
 [Unreleased]: https://github.com/Nie-Tianyi/agent_oxide/compare/master...HEAD

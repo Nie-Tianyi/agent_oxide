@@ -57,19 +57,14 @@ cd tutorial
 ```
 
 Each crate is published independently on crates.io, so you can depend on
-just the pieces you need — with `path` while you follow along locally (after
-publishing you'd use `version = "0.5"` instead):
+everything in one place — `agent_oxide` plus its proc-macro companion:
 
 **`tutorial/Cargo.toml`:**
 
 ```toml
 [dependencies]
-deepseek = { path = "../agent_oxide/core/deepseek" }
-engine = { path = "../agent_oxide/core/engine" }
-memory = { path = "../agent_oxide/core/memory" }
-provider = { path = "../agent_oxide/core/provider" }
-tools = { path = "../agent_oxide/core/tools" }
-tools-macros = { path = "../agent_oxide/core/tools-macros" }
+agent_oxide = "0.5"
+agent-oxide-macros = "0.5"
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -104,8 +99,8 @@ cargo build
 Replace `tutorial/src/main.rs` with:
 
 ```rust
-use deepseek::DeepSeekClient;
-use engine::Agent;
+use agent_oxide::deepseek::DeepSeekClient;
+use agent_oxide::engine::Agent;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -193,7 +188,7 @@ arguments, and the `execute_stream` method.
 ```rust
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tools::{tool, ProgressStream, ToolError};
+use agent_oxide::tools::{tool, ProgressStream, ToolError};
 
 // 1. Define your argument struct
 #[derive(JsonSchema, Deserialize)]
@@ -231,11 +226,11 @@ Let's build a real calculator that handles arbitrary expressions.  Update
 `tutorial/src/main.rs`:
 
 ```rust
-use deepseek::DeepSeekClient;
-use engine::Agent;
+use agent_oxide::deepseek::DeepSeekClient;
+use agent_oxide::engine::Agent;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tools::{tool, ProgressStream, ToolError};
+use agent_oxide::tools::{tool, ProgressStream, ToolError};
 
 // ── Calculator Tool ──────────────────────────────────────────────────────────
 
@@ -424,7 +419,7 @@ sandboxed file system that keeps the agent inside the workspace root.
 ### WorkspaceFs Basics
 
 ```rust
-use tools::WorkspaceFs;
+use agent_oxide::tools::WorkspaceFs;
 
 let fs = WorkspaceFs::new("/path/to/workspace").unwrap();
 
@@ -450,7 +445,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tools::{tool, ProgressStream, ToolError, WorkspaceFs};
+use agent_oxide::tools::{tool, ProgressStream, ToolError, WorkspaceFs};
 
 // ── ReadTool ─────────────────────────────────────────────────────────────────
 
@@ -530,9 +525,9 @@ A hook is a type that implements `AgentHook`.  Every method has a default
 no-op — you only override what you care about.
 
 ```rust
-use engine::AgentHook;
-use memory::SharedMemory;
-use provider::Message;
+use agent_oxide::engine::AgentHook;
+use agent_oxide::memory::SharedMemory;
+use agent_oxide::provider::Message;
 
 struct LoggingHook;
 
@@ -572,7 +567,7 @@ For TUIs and interactive apps, you want to see text **as it's generated**,
 not after the whole response is ready.  Use `run_with_events()`:
 
 ```rust
-use engine::AgentEvent;
+use agent_oxide::engine::AgentEvent;
 use tokio::sync::mpsc;
 
 let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
@@ -658,7 +653,7 @@ Agent:
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::fs;
-use tools::{tool, ProgressStream, ToolError};
+use agent_oxide::tools::{tool, ProgressStream, ToolError};
 
 #[derive(JsonSchema, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -739,8 +734,8 @@ impl TodoTool {
 ### Step 2: Wire Everything Together
 
 ```rust
-use deepseek::DeepSeekClient;
-use engine::{Agent, AgentEvent};
+use agent_oxide::deepseek::DeepSeekClient;
+use agent_oxide::engine::{Agent, AgentEvent};
 use std::env;
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -870,12 +865,12 @@ in depth:
 | What | Where | Why |
 |---|---|---|
 | Real tool implementations | loomis app: `bins/loomis/src/tools/` | See production-quality tools |
-| Sandbox system | `extensions/sandbox/src/` | Full sandbox defense in depth |
+| Sandbox system | `src/sandbox/` | Full sandbox defense in depth |
 | TUI implementation | loomis app: `bins/loomis/src/tui/` | ratatui-based terminal UI |
 | Agent assembly | loomis app: `bins/loomis/src/app.rs` | How the reference app wires everything |
-| Compaction hooks | `extensions/compact/src/` | MicroCompact and MacroCompact |
-| DeepSeek client | `core/deepseek/src/` | SSE streaming implementation |
-| Engine core | `core/engine/src/agent.rs` | The ReAct loop in full detail |
+| Compaction hooks | `src/hooks/` | MicroCompact and MacroCompact |
+| DeepSeek client | `src/deepseek/` | SSE streaming implementation |
+| Engine core | `src/engine/agent.rs` | The ReAct loop in full detail |
 
 ### Ideas for Your Next Project
 
@@ -895,4 +890,4 @@ in depth:
 ---
 
 **Happy building!**  If you have questions, check the [Senior Developer Guide](senior-developer-guide.md)
-or explore the source code in `core/`, `extensions/`, and `extensions/`.
+or explore the source code in `src/`.

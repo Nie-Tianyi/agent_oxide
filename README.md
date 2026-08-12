@@ -57,18 +57,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 > as a plain Rust struct: **class doc = system prompt, sync methods = tools,
 > async methods = LLM generations, Pydantic-style returns = structured
 > output.** It compiles down to the core engine (`Tool` trait, `ToolRegistry`,
-> `engine::Agent`) with zero changes to `core/`, and coexists freely with the
-> imperative `Agent::builder(...)` API above.
+> `engine::Agent`) with zero changes to the core engine, and coexists freely
+> with the imperative `Agent::builder(...)` API above.
 
-Provided by two crates — `agent-macros` (`#[derive(Agent)]` + `#[agent_impl]`,
-compile time) and `agent-kit` (runtime: `AgentBlueprint`, `Strategy`,
-`BuildConfig`). Add both to your dependencies and write:
+Provided by two crates — `agent-oxide-macros` (`#[derive(Agent)]` +
+`#[agent_impl]` + `#[tool]`, compile time) and `agent_oxide` itself (runtime:
+`agent_oxide::agent_kit::{AgentBlueprint, Strategy, BuildConfig}`). Add both
+to your dependencies and write:
 
 ```rust
-use agent_kit::schemars::JsonSchema;
-use agent_kit::serde::{Deserialize, Serialize};
-use agent_macros::{Agent, agent_impl};
-use deepseek::DeepSeekClient;
+use agent_oxide::schemars::JsonSchema;
+use agent_oxide::serde::{Deserialize, Serialize};
+use agent_oxide::{Agent, agent_impl};
+use agent_oxide::DeepSeekClient;
 
 /// You are an agent specializing in analyzing customer feedback.   // ← struct doc = system prompt
 #[derive(Clone, Agent)]
@@ -117,34 +118,33 @@ reference: [docs/agent-kit-guide.md](docs/agent-kit-guide.md).
 
 ## Crates
 
-The umbrella crate re-exports every sub-crate, so `use agent_oxide::...`
-gives you the whole framework:
-
-| Module | Crate | Role |
-| ------ | ----- | ---- |
-| `agent_oxide::provider` | `provider` | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
-| `agent_oxide::deepseek` | `deepseek` | DeepSeek API client |
-| `agent_oxide::memory` | `memory` | Conversation memory buffer |
-| `agent_oxide::tools` | `tools` | `Tool` trait, `ToolRegistry`, `#[tool]` macro |
-| `agent_oxide::engine` | `engine` | Agent ReAct loop, `AgentHook`, `AgentEvent` |
-| `agent_oxide::util` | `util` | Shared utilities |
-| `agent_oxide::agent_kit` | `agent-kit` | NOOA — NVIDIA OO Agents-style ergonomics (`#[derive(Agent)]`) |
-| `agent_oxide::hooks` | `hooks` | Compaction hooks (micro/macro) |
-| `agent_oxide::observability` | `observability` | Full-chain tracing |
-| `agent_oxide::persistence` | `persistence` | Conversation save/load |
-| `agent_oxide::sandbox` | `sandbox` | 5-layer security sandbox |
-| `agent_oxide::skills` | `skills` | Skill discovery & registry |
-| `agent_oxide::subagent` | `subagent` | Spawn child agents as tools |
-
-Each sub-crate is also published independently on crates.io — depend on
-just the pieces you need:
+Everything ships in **two crates**: `agent_oxide` (all framework code) and
+`agent-oxide-macros` (the proc macros `#[derive(Agent)]`, `#[agent_impl]`,
+`#[tool]`).
 
 ```toml
 [dependencies]
-agent_oxide = "0.5"          # everything
-engine = "0.5"               # just the ReAct loop
-sandbox = "0.5"              # just the sandbox
+agent_oxide = "0.5"
+agent-oxide-macros = "0.5"
 ```
+
+Every feature is a module of `agent_oxide`:
+
+| Module | Role |
+| ------ | ---- |
+| `provider` | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
+| `deepseek` | DeepSeek API client |
+| `memory` | Conversation memory buffer |
+| `tools` | `Tool` trait, `ToolRegistry`, `#[tool]` macro |
+| `engine` | Agent ReAct loop, `AgentHook`, `AgentEvent` |
+| `util` | Shared utilities (`iso8601_now`) |
+| `agent_kit` | NOOA — NVIDIA OO Agents-style ergonomics (`#[derive(Agent)]`) |
+| `hooks` | Compaction hooks (micro/macro) |
+| `observability` | Full-chain tracing |
+| `persistence` | Conversation save/load |
+| `sandbox` | 5-layer security sandbox |
+| `skills` | Skill discovery & registry |
+| `subagent` | Spawn child agents as tools |
 
 ## Defining tools
 
@@ -175,8 +175,9 @@ impl EchoTool {
 ```
 
 > **Note:** like all proc-macro crates (serde, tokio), `#[tool]` expands to
-> code referencing `::tools::` and `::serde_json::` paths, so consuming
-> crates must add `tools` and `serde_json` as direct dependencies.
+> code referencing `agent_oxide::tools::` and `agent_oxide::serde_json::`
+> paths — so consuming crates need `agent_oxide` as a **direct** dependency
+> (a transitive one is not enough).
 
 ## Architecture
 
@@ -198,35 +199,33 @@ impl EchoTool {
 - **Agent Kit** — NOOA (NVIDIA OO Agents-style) ergonomics: class-doc =
   system prompt, sync methods = tools, async methods = LLM generations.
 
-Rust 2024 edition, Tokio async. The umbrella `agent_oxide` crate re-exports
-all sub-crates; each sub-crate is also published independently on crates.io.
-The codebase uses Rust 2024 native async fn in traits (RPITIT) — do **NOT**
-use the `async-trait` crate. Prefer sync traits for dyn-dispatch; keep
-async work in dedicated components.
+Rust 2024 edition, Tokio async. One crate, many modules: the framework
+uses Rust 2024 native async fn in traits (RPITIT) — do **NOT** use the
+`async-trait` crate. Prefer sync traits for dyn-dispatch; keep async work
+in dedicated components.
 
 ### Workspace structure
 
 ```text
 agent_oxide/
-├── Cargo.toml              # [package] agent_oxide umbrella + [workspace]
-├── src/lib.rs              # umbrella re-exports + prelude
-├── core/
+├── Cargo.toml              # [package] agent_oxide + [workspace]
+├── agent_oxide-macros/     # proc macros: #[derive(Agent)], #[agent_impl], #[tool]
+├── src/
+│   ├── lib.rs              # module tree + prelude
 │   ├── provider/           # LLMClient trait + shared types
 │   ├── deepseek/           # DeepSeekClient — implements LLMClient
 │   ├── tools/              # Tool trait, ToolRegistry, ProgressStream
-│   ├── tools-macros/       # #[tool] proc macro
 │   ├── memory/             # Memory buffer, PendingHints
-│   ├── util/               # Shared workspace utilities (iso8601_now)
-│   └── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
-├── extensions/
+│   ├── util/               # Shared utilities (iso8601_now)
+│   ├── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
 │   ├── skills/             # SkillDef, SkillRegistry — skill discovery & loading
-│   ├── compact/            # hooks crate — MicroCompactHook + MacroCompactHook
+│   ├── hooks/              # MicroCompactHook + MacroCompactHook
 │   ├── persistence/        # Conversation persistence — save/load threads, PersistenceHook
 │   ├── subagent/           # SubagentTool — spawn child agents as tools
 │   ├── observability/      # TraceEvent, TraceStore, RunMetrics — full-chain tracing
 │   ├── sandbox/            # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, etc.
-│   ├── agent-kit/          # NOOA — NVIDIA OO Agents-style ergonomics
-│   └── agent-macros/       # #[derive(Agent)] + #[agent_impl] proc macros
+│   └── agent_kit/          # NOOA — NVIDIA OO Agents-style ergonomics
+├── examples/               # NOOA examples: feedback / inventory / note-taking agents
 └── docs/
     ├── beginner-developer-guide.md
     ├── senior-developer-guide.md
@@ -234,30 +233,25 @@ agent_oxide/
     └── agent-kit-guide.md
 ```
 
-### Dependency graph
+### Module dependency graph
 
 ```text
-core/
-    provider (no internal deps)
-        ↑
-        ├── deepseek ──── (impl LLMClient)
-        ├── tools ─────── (uses provider + tools-macros)
-        ├── memory ────── (uses provider)
-        ↑
-        └── engine ────── (uses provider + tools + memory)
-                ↑
-extensions/
-    skills ────────────── (no internal deps)
-    hooks ─────────────── (uses provider + memory + engine)
-    persistence ───────── (uses provider + engine + memory + deepseek + util)
-    observability ─────── (uses provider + engine + memory)
-    sandbox ───────────── (uses engine + memory + provider + util)
-    subagent ──────────── (uses provider + tools + engine + memory + observability)
-    agent-kit ─────────── (uses provider + tools + engine + memory)
-    agent-macros ──────── (proc macro, no internal deps)
-                ↑
-umbrella
-    agent_oxide ───────── (re-exports every crate)
+provider (no internal deps)   util (no internal deps)   skills (no internal deps)
+    ↑                            ↑
+    ├── deepseek ────────────────┘
+    ├── tools ─────── (uses provider)
+    ├── memory ────── (uses provider)
+    ↑
+    └── engine ────── (uses provider + tools + memory)
+            ↑
+hooks ─────────────── (uses provider + memory + engine + util)
+persistence ───────── (uses provider + engine + memory + deepseek + util)
+observability ─────── (uses provider + engine + memory)
+sandbox ───────────── (uses engine + memory + provider + util)
+subagent ──────────── (uses provider + tools + engine + memory + observability + util)
+agent_kit ─────────── (uses provider + tools + engine + memory)
+
+proc macros (agent_oxide-macros) — generate code against `agent_oxide::` paths
 ```
 
 ### Key patterns
@@ -282,9 +276,10 @@ Generates `Tool` trait impl — the struct must define an inherent
 `execute_stream(&self, args: ArgsType) -> Result<ProgressStream, ToolError>`.
 JSON Schema is lazily generated from `ArgsType` via `schemars`.
 
-> Note: the macro expands to `::tools::` / `::serde_json::` paths, so
-> consuming crates need `tools` + `serde_json` as direct dependencies
-> (standard proc-macro behaviour, like serde/tokio).
+> Note: the macro expands to `agent_oxide::tools::` /
+> `agent_oxide::serde_json::` paths, so consuming crates need `agent_oxide`
+> as a **direct** dependency (standard proc-macro behaviour, like
+> serde/tokio).
 
 #### `AgentHook` trait — 9 lifecycle callbacks
 
@@ -354,7 +349,7 @@ user-invoked tool calls.
    for summarisation via `engine::block_on`, inserts summary as System
    message.
 
-Key constants in `extensions/compact/src/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
+Key constants in `src/hooks/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
 `DEFAULT_COMPACT_CHAR_LIMIT`, `DEFAULT_KEEP_LAST_N`, `DEFAULT_KEEP_RECENT_TOOL_OUTPUTS`.
 
 #### Sandbox (defense in depth)
@@ -380,7 +375,7 @@ lock-free `RunMetrics` atomics. Trace events flow via the `tracing` crate.
 
 #### Skills system
 
-`SkillRegistry` (extensions/skills) discovers and parses `.md` skill files
+`SkillRegistry` (src/skills) discovers and parses `.md` skill files
 (YAML frontmatter + body) from user-configured skill directories. The
 registry is provider-agnostic; consuming applications wire it to their own
 `SkillTool` / `SkillHook`.

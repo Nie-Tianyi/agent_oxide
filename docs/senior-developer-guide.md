@@ -29,24 +29,24 @@
 
 ```
 agent_oxide/
-├── Cargo.toml              # [workspace] — members = ["core/*", "extensions/*", "bins/*"]
-├── core/
+├── Cargo.toml              # [package] agent_oxide + [workspace] members = ["agent_oxide-macros"]
+├── agent_oxide-macros/     # #[derive(Agent)], #[agent_impl], #[tool] proc macros
+├── src/
+│   ├── lib.rs              # module tree + prelude
 │   ├── provider/           # LLMClient trait + shared types
 │   ├── deepseek/           # DeepSeekClient — implements LLMClient
 │   ├── tools/              # Tool trait, ToolRegistry
-│   ├── tools-macros/       # #[tool] proc macro — generates Tool trait impls
 │   ├── memory/             # Memory (Vec<Message> buffer)
 │   ├── util/               # Shared workspace utilities (iso8601_now)
-│   └── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent
-├── extensions/
+│   ├── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent
 │   ├── hooks/              # MicroCompactHook, MacroCompactHook
 │   ├── persistence/        # Save/load threads, thread naming, PersistenceHook
 │   ├── observability/      # TraceEvent, TraceStore, RunMetrics
 │   ├── sandbox/            # WorkspaceFs, ShellFilter, SandboxHook, etc.
 │   ├── skills/             # SkillDef, SkillRegistry, ActiveSkills
-│   └── subagent/           # SubagentTool — spawn child agents as tools
-└── (your app)
-    └── loomis/             # Reference app: concrete tools, sandbox, TUI, main.rs
+│   ├── subagent/           # SubagentTool — spawn child agents as tools
+│   └── agent_kit/          # NOOA — NVIDIA OO Agents-style ergonomics
+└── examples/               # NOOA examples: feedback / inventory / note-taking agents
 ```
 
 ### Dependency Graph (no cycles)
@@ -73,29 +73,29 @@ provider ───────────────────────�
 
 | Crate | Key Type | Role | Location |
 |---|---|---|---|
-| `provider` | `LLMClient` | Abstraction over LLM APIs | `core/provider/src/lib.rs` |
-| `provider` | `Message`, `Role`, `ToolCall`, `ToolDef` | Conversation primitives | `core/provider/src/types.rs` |
-| `provider` | `CompletionRequest`, `CompletionResponse` | API request/response types | `core/provider/src/types.rs` |
-| `provider` | `StreamChunk`, `Delta` | SSE streaming primitives | `core/provider/src/types.rs` |
-| `deepseek` | `DeepSeekClient` | Concrete LLMClient impl | `core/deepseek/src/lib.rs` |
-| `tools` | `Tool` | Trait — sync, Send+Sync, object-safe | `core/tools/src/tool.rs` |
-| `tools` | `ToolRegistry` | Name-indexed tool collection | `core/tools/src/registry.rs` |
-| `tools` | `Progress`, `ProgressStream` | Tool output streaming | `core/tools/src/progress.rs` |
-| `sandbox` | `WorkspaceFs` | Sandboxed filesystem | `extensions/sandbox/src/fs.rs` |
-| `sandbox` | `SandboxConfig` | Security policy (TOML) | `extensions/sandbox/src/config.rs` |
-| `tools-macros` | `#[tool]` | Proc macro codegen | `core/tools-macros/src/lib.rs` |
-| `memory` | `Memory`, `SharedMemory` | Conversation buffer | `core/memory/src/memory.rs` |
-| `persistence` | `PersistenceConfig` | Thread storage layout | `extensions/persistence/src/persistence.rs` |
-| `persistence` | `PersistenceHook` | Auto-save after each run | `extensions/persistence/src/hook.rs` |
-| `hooks` | `MicroCompactHook` | Tool-output clearing | `extensions/compact/src/compact.rs` |
-| `hooks` | `MacroCompactHook<C>` | LLM summarisation | `extensions/compact/src/compact.rs` |
-| `engine` | `Agent` | ReAct loop runner | `core/engine/src/agent.rs` |
-| `engine` | `AgentEvent` | Unified event stream (single channel) | `core/engine/src/events.rs` |
-| `engine` | `AgentHook` | 10-callback lifecycle trait | `core/engine/src/hooks.rs` |
-| `engine` | `EngineContext` | Agent dependencies (advanced API) | `core/engine/src/context.rs` |
-| `engine` | `InterveneRequest`, `InterveneResponse` | User-interaction protocol | `core/engine/src/events.rs` |
-| `subagent` | `SubagentTool<C>` | Child agent as a Tool | `extensions/subagent/src/tool.rs` |
-| `subagent` | `SubagentConfig` | Child agent policy | `extensions/subagent/src/config.rs` |
+| `provider` | `LLMClient` | Abstraction over LLM APIs | `src/provider/src/lib.rs` |
+| `provider` | `Message`, `Role`, `ToolCall`, `ToolDef` | Conversation primitives | `src/provider/src/types.rs` |
+| `provider` | `CompletionRequest`, `CompletionResponse` | API request/response types | `src/provider/src/types.rs` |
+| `provider` | `StreamChunk`, `Delta` | SSE streaming primitives | `src/provider/src/types.rs` |
+| `deepseek` | `DeepSeekClient` | Concrete LLMClient impl | `src/deepseek/lib.rs` |
+| `tools` | `Tool` | Trait — sync, Send+Sync, object-safe | `src/tools/src/tool.rs` |
+| `tools` | `ToolRegistry` | Name-indexed tool collection | `src/tools/src/registry.rs` |
+| `tools` | `Progress`, `ProgressStream` | Tool output streaming | `src/tools/src/progress.rs` |
+| `sandbox` | `WorkspaceFs` | Sandboxed filesystem | `src/sandbox/fs.rs` |
+| `sandbox` | `SandboxConfig` | Security policy (TOML) | `src/sandbox/config.rs` |
+| `agent-oxide-macros` | `#[tool]` | Proc macro codegen | `agent_oxide-macros/src/tool.rs` |
+| `memory` | `Memory`, `SharedMemory` | Conversation buffer | `src/memory/buffer.rs` |
+| `persistence` | `PersistenceConfig` | Thread storage layout | `src/persistence/store.rs` |
+| `persistence` | `PersistenceHook` | Auto-save after each run | `src/persistence/hook.rs` |
+| `hooks` | `MicroCompactHook` | Tool-output clearing | `src/hooks/compact.rs` |
+| `hooks` | `MacroCompactHook<C>` | LLM summarisation | `src/hooks/compact.rs` |
+| `engine` | `Agent` | ReAct loop runner | `src/engine/agent.rs` |
+| `engine` | `AgentEvent` | Unified event stream (single channel) | `src/engine/agent.rs` |
+| `engine` | `AgentHook` | Lifecycle hook trait | `src/engine/hooks.rs` |
+| `engine` | `EngineContext` | Agent dependencies (advanced API) | `src/engine/context.rs` |
+| `engine` | `InterventionRequest`, `InterventionResponse` | User-interaction protocol | `src/engine/intervention.rs` |
+| `subagent` | `SubagentTool<C>` | Child agent as a Tool | `src/subagent/tool.rs` |
+| `subagent` | `SubagentConfig` | Child agent policy | `src/subagent/config.rs` |
 
 ### Design Decisions
 
@@ -126,7 +126,7 @@ shared memory across agents, custom compaction setup).
 ### Trait Definition
 
 ```rust
-// core/provider/src/lib.rs
+// src/provider/src/lib.rs
 use crate::CompletionRequest;
 use crate::CompletionResponse;
 use crate::ProviderError;
@@ -153,7 +153,7 @@ This is Rust 2024 native `async fn` in traits (RPITIT) — **no `#[async_trait]`
 ### Key Types
 
 ```rust
-// core/provider/src/types.rs
+// src/provider/src/types.rs
 
 pub struct CompletionRequest {
     pub model: String,
@@ -228,7 +228,7 @@ and your provider's native API format.  The key translation points:
 **Step 2: Skeleton implementation.**
 
 ```rust
-use provider::{
+use agent_oxide::provider::{
     CompletionRequest, CompletionResponse, LLMClient, Message, ProviderError,
     Role, StreamChunk, Delta, ToolCall, Usage,
 };
@@ -269,7 +269,7 @@ impl AnthropicClient {
     }
 
     /// Convert Agent Oxide ToolDefs to Anthropic's tool format.
-    fn convert_tools(&self, tools: &[provider::ToolDef]) -> Vec<serde_json::Value> {
+    fn convert_tools(&self, tools: &[agent_oxide::provider::ToolDef]) -> Vec<serde_json::Value> {
         tools
             .iter()
             .map(|td| {
@@ -409,7 +409,7 @@ impl LLMClient for AnthropicClient {
 ### Error Handling
 
 ```rust
-// core/provider/src/lib.rs
+// src/provider/src/lib.rs
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
     #[error("HTTP error: {0}")]
@@ -459,7 +459,7 @@ While `#[tool]` covers 95% of cases, manual implementation gives you full contro
 The trait is sync and object-safe:
 
 ```rust
-// core/tools/src/tool.rs
+// src/tools/src/tool.rs
 use serde_json::Value;
 use crate::{ProgressStream, ToolError};
 
@@ -532,7 +532,7 @@ impl Tool for MyTool {
 ### `ProgressStream` Internals
 
 ```rust
-// core/tools/src/progress.rs
+// src/tools/src/progress.rs
 
 pub enum Progress {
     /// Non-terminal update from a long-running tool.
@@ -585,7 +585,7 @@ fn execute_stream(&self, args: MyArgs) -> Result<ProgressStream, ToolError> {
 ### `ToolError`
 
 ```rust
-// core/tools/src/lib.rs
+// src/tools/src/lib.rs
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("Invalid arguments: {0}")]
@@ -612,7 +612,7 @@ for permission denials).
 ### `ToolRegistry`
 
 ```rust
-use tools::ToolRegistry;
+use agent_oxide::tools::ToolRegistry;
 use std::sync::Arc;
 
 let mut registry = ToolRegistry::new();
@@ -644,9 +644,9 @@ share across agents (e.g., parent agent and subagents).
 ### Full Trait Definition
 
 ```rust
-// core/engine/src/hooks.rs
-use memory::SharedMemory;
-use provider::{Message, ProviderError};
+// src/engine/hooks.rs
+use agent_oxide::memory::SharedMemory;
+use agent_oxide::provider::{Message, ProviderError};
 use crate::{CallOrigin, InterveneRequest, InterveneResponse, RunOutcome};
 
 pub trait AgentHook: Send + Sync {
@@ -794,9 +794,9 @@ Agent::builder(client, model)
 ### Complete Hook Example — Approval Hook
 
 ```rust
-use engine::{AgentEvent, AgentHook, CallOrigin, InterveneRequest, InterveneResponse};
-use memory::SharedMemory;
-use provider::Message;
+use agent_oxide::engine::{AgentEvent, AgentHook, CallOrigin, InterveneRequest, InterveneResponse};
+use agent_oxide::memory::SharedMemory;
+use agent_oxide::provider::Message;
 use std::sync::mpsc::SyncSender;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -862,12 +862,12 @@ Use `EngineContext::builder()` instead of `Agent::builder()` when you need:
 ### Full Wiring Example
 
 ```rust
-use deepseek::DeepSeekClient;
-use engine::{Agent, EngineContext};
-use hooks::{MicroCompactHook, MacroCompactHook};
-use memory::{Memory, SharedMemory};
+use agent_oxide::deepseek::DeepSeekClient;
+use agent_oxide::engine::{Agent, EngineContext};
+use agent_oxide::hooks::{MicroCompactHook, MacroCompactHook};
+use agent_oxide::memory::{Memory, SharedMemory};
 use std::sync::Arc;
-use tools::ToolRegistry;
+use agent_oxide::tools::ToolRegistry;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -956,7 +956,7 @@ The two APIs are interchangeable — choose `Agent::builder()` for simplicity,
 ### Memory Internals
 
 ```rust
-// core/memory/src/memory.rs
+// src/memory/src/memory.rs
 pub struct Memory {
     pub messages: Vec<Message>,
     pub last_usage: Option<Usage>,
@@ -994,7 +994,7 @@ unparseable) — the messages remain in the conversation (tool call ID
 pairing is preserved), but the content is pruned.
 
 ```rust
-// extensions/compact/src/compact.rs
+// src/hooks/compact.rs
 pub struct MicroCompactHook {
     high_volume_tools: Vec<String>,
     keep_most_recent: usize,
@@ -1054,7 +1054,7 @@ conversation.
 5. The agent continues with a drastically smaller context
 
 ```rust
-// extensions/compact/src/compact.rs
+// src/hooks/compact.rs
 pub const DEFAULT_COMPACT_CHARS: usize = 2_000_000;  // ~2M chars
 pub const DEFAULT_KEEP_LAST_N: usize = 10;
 
@@ -1165,7 +1165,7 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
 ### Complete `AgentEvent` Enum
 
 ```rust
-// core/engine/src/events.rs
+// src/engine/events.rs
 pub enum AgentEvent {
     /// Run is starting. user_input is the original user question.
     RunStarted { user_input: String },
@@ -1265,7 +1265,7 @@ simplifies consumer code to a single match statement.
 ### TUI Consumption Pattern
 
 ```rust
-use engine::AgentEvent;
+use agent_oxide::engine::AgentEvent;
 
 async fn consume_events(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentEvent>) {
     let mut current_text = String::new();
@@ -1425,7 +1425,7 @@ Covered in §8.  All file paths are canonicalized and bound-checked.
 ### Layer 2: ShellFilter (Command Classification)
 
 ```rust
-// extensions/sandbox/src/shell_filter.rs (conceptual)
+// src/sandbox/shell_filter.rs (conceptual)
 enum Classification {
     AutoApprove,            // Safe prefix match
     Deny(String),           // Matches deny pattern
@@ -1690,7 +1690,7 @@ pub struct SubagentConfig {
 ### `filter_tools()` — Creating a Read-Only Registry
 
 ```rust
-use subagent::filter_tools;
+use agent_oxide::subagent::filter_tools;
 use std::sync::Arc;
 
 // Parent has: read, write, edit, grep, glob, ls, calculator, shell, task
@@ -1708,7 +1708,7 @@ let subagent_tools = Arc::new(filter_tools(
 ### Usage Example
 
 ```rust
-use subagent::{SubagentTool, SubagentConfig, filter_tools};
+use agent_oxide::subagent::{SubagentTool, SubagentConfig, filter_tools};
 
 let subagent_tools = Arc::new(filter_tools(tools, &["read", "grep", "glob", "calculator"]));
 
@@ -1743,7 +1743,7 @@ channel back to the main runtime.  A timeout guard (`tokio::select!` or
 ### API
 
 ```rust
-use memory::{save_conversation, load_conversation, list_threads};
+use agent_oxide::memory::{save_conversation, load_conversation, list_threads};
 use std::path::Path;
 
 // Save current conversation
@@ -1804,7 +1804,7 @@ Rust is a systems programming language...
 
 ### Auto-Save
 
-In `extensions/`, conversation is auto-saved after each agent turn.  The
+In `src/`, conversation is auto-saved after each agent turn.  The
 `sandbox_hook` triggers the save in `on_run_finish`.
 
 ---
@@ -1815,13 +1815,13 @@ A fully assembled agent that reviews code.  This example uses the advanced
 `EngineContext` API, manual hook registration, and subagents.
 
 ```rust
-use deepseek::DeepSeekClient;
-use engine::{Agent, AgentEvent, EngineContext};
-use hooks::{MicroCompactHook, MacroCompactHook};
-use memory::{Memory, SharedMemory};
-use subagent::{SubagentTool, SubagentConfig, filter_tools};
+use agent_oxide::deepseek::DeepSeekClient;
+use agent_oxide::engine::{Agent, AgentEvent, EngineContext};
+use agent_oxide::hooks::{MicroCompactHook, MacroCompactHook};
+use agent_oxide::memory::{Memory, SharedMemory};
+use agent_oxide::subagent::{SubagentTool, SubagentConfig, filter_tools};
 use std::sync::Arc;
-use tools::ToolRegistry;
+use agent_oxide::tools::ToolRegistry;
 use tokio::sync::mpsc;
 
 #[tokio::main]
@@ -2001,18 +2001,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 | Want to... | Read this file |
 |---|---|
-| Understand the ReAct loop | `core/engine/src/agent.rs` |
+| Understand the ReAct loop | `src/engine/agent.rs` |
 | See how tools are defined | loomis app: `bins/loomis/src/tools/` |
-| See how sandbox works | `extensions/sandbox/src/` |
+| See how sandbox works | `src/sandbox/` |
 | See how TUI renders events | loomis app: `bins/loomis/src/tui/` |
 | See how agent is assembled | loomis app: `bins/loomis/src/app.rs` |
-| Understand SSE streaming | `core/deepseek/src/client.rs` |
-| Understand compaction | `extensions/compact/src/compact.rs` |
-| Understand subagents | `extensions/subagent/src/tool.rs` |
-| Understand the Tool trait | `core/tools/src/tool.rs` |
-| Understand the hook lifecycle | `core/engine/src/hooks.rs` |
-| Understand events | `core/engine/src/events.rs` |
-| Understand sandbox config | `extensions/sandbox/src/config.rs` |
+| Understand SSE streaming | `src/deepseek/client.rs` |
+| Understand compaction | `src/hooks/compact.rs` |
+| Understand subagents | `src/subagent/tool.rs` |
+| Understand the Tool trait | `src/tools/src/tool.rs` |
+| Understand the hook lifecycle | `src/engine/hooks.rs` |
+| Understand events | `src/engine/events.rs` |
+| Understand sandbox config | `src/sandbox/config.rs` |
 
 ### D. Glossary
 

@@ -60,7 +60,7 @@ Two rules to remember:
 - Hooks run in **registration order** — order matters when hooks depend on
   each other (e.g. register sandbox after observability).
 - For async work inside a sync hook (e.g. LLM summarisation), use
-  `engine::block_on` — a bare `Handle::block_on` panics on tokio worker
+  `agent_oxide::engine::block_on` — a bare `Handle::block_on` panics on tokio worker
   threads.
 
 A trivial plugin — a logging hook:
@@ -84,7 +84,7 @@ impl AgentHook for LoggingHook {
 Skills are `.md` files (YAML frontmatter + body) discovered at startup:
 
 ```rust,ignore
-use skills::SkillRegistry;
+use agent_oxide::skills::SkillRegistry;
 
 let registry = SkillRegistry::discover(&[project_skills_dir, user_skills_dir]);
 for skill in registry.list() {
@@ -104,7 +104,7 @@ harness's job, typically two pieces:
 ```rust,ignore
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use skills::{ActiveSkills, SkillRegistry};
+use agent_oxide::skills::{ActiveSkills, SkillRegistry};
 
 let active: ActiveSkills = Arc::new(RwLock::new(HashMap::new()));
 
@@ -128,8 +128,8 @@ sub-tasks. Give the child a **restricted tool set** (never the `task` tool
 itself, to prevent recursion):
 
 ```rust,ignore
-use subagent::{SubagentConfig, SubagentTool};
-use subagent::filter_tools;
+use agent_oxide::subagent::{SubagentConfig, SubagentTool};
+use agent_oxide::subagent::filter_tools;
 
 let child_tools = Arc::new(filter_tools(
     &parent_registry,
@@ -153,7 +153,7 @@ let agent = Agent::builder(client, model)
 same conversation; each run appends to the shared history:
 
 ```rust,ignore
-use memory::{Memory, SharedMemory};
+use agent_oxide::memory::{Memory, SharedMemory};
 use std::sync::{Arc, RwLock};
 
 let shared: SharedMemory = Arc::new(RwLock::new(Memory::new()));
@@ -293,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 When a hook or tool needs a decision (sandbox approval, an LLM question), it:
 
-1. generates a `request_id` (`engine::next_request_id()`),
+1. generates a `request_id` (`agent_oxide::engine::next_request_id()`),
 2. registers a `std::sync::mpsc::SyncSender` with the `ResponseRouter`,
 3. emits `InterventionRequired(request)` and blocks on its own receiver.
 

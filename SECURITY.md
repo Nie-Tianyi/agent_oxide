@@ -40,10 +40,10 @@ Include, when possible:
 
 The following components are in-scope for security review:
 
-- `extensions/sandbox` — path canonicalization, shell filtering, env
+- `src/sandbox` — path canonicalization, shell filtering, env
   sanitization, watchdog, audit log.
-- `extensions/subagent` — tool filtering and child-agent isolation.
-- `core/engine` — prompt construction and memory handling.
+- `src/subagent` — tool filtering and child-agent isolation.
+- `src/engine` — prompt construction and memory handling.
 - Any code path that spawns processes or writes files based on LLM output.
 
 ## Disclosure policy

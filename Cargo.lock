@@ -3,26 +3,7 @@
 version = 4
 
 [[package]]
-name = "agent-kit"
-version = "0.5.0"
-dependencies = [
- "agent-macros",
- "deepseek",
- "engine",
- "futures-executor",
- "futures-util",
- "memory",
- "provider",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tools",
- "tracing",
-]
-
-[[package]]
-name = "agent-macros"
+name = "agent-oxide-macros"
 version = "0.5.0"
 dependencies = [
  "proc-macro2",
@@ -34,23 +15,23 @@ dependencies = [
 name = "agent_oxide"
 version = "0.5.0"
 dependencies = [
- "agent-kit",
- "agent-macros",
+ "agent-oxide-macros",
  "criterion",
- "deepseek",
- "engine",
- "hooks",
- "memory",
- "observability",
- "persistence",
- "provider",
- "sandbox",
+ "futures-core",
+ "futures-executor",
+ "futures-util",
+ "glob",
+ "regex",
+ "reqwest",
+ "schemars",
+ "serde",
  "serde_json",
- "skills",
- "subagent",
- "tools",
- "tools-macros",
- "util",
+ "serde_yaml",
+ "tempfile",
+ "time",
+ "tokio",
+ "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -348,19 +329,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
-name = "deepseek"
-version = "0.5.0"
-dependencies = [
- "futures-util",
- "provider",
- "reqwest",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "deranged"
 version = "0.5.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -405,20 +373,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
 dependencies = [
  "cfg-if",
-]
-
-[[package]]
-name = "engine"
-version = "0.5.0"
-dependencies = [
- "futures-util",
- "memory",
- "provider",
- "serde",
- "serde_json",
- "tokio",
- "tools",
- "tracing",
 ]
 
 [[package]]
@@ -615,20 +569,6 @@ name = "hermit-abi"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc0fef456e4baa96da950455cd02c081ca953b141298e41db3fc7e36b1da849c"
-
-[[package]]
-name = "hooks"
-version = "0.5.0"
-dependencies = [
- "engine",
- "futures-util",
- "memory",
- "provider",
- "serde_json",
- "tokio",
- "tracing",
- "util",
-]
 
 [[package]]
 name = "http"
@@ -990,14 +930,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
-name = "memory"
-version = "0.5.0"
-dependencies = [
- "provider",
- "tracing",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1036,17 +968,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
 dependencies = [
  "libc",
-]
-
-[[package]]
-name = "observability"
-version = "0.5.0"
-dependencies = [
- "engine",
- "memory",
- "provider",
- "tracing",
- "util",
 ]
 
 [[package]]
@@ -1095,21 +1016,6 @@ name = "percent-encoding"
 version = "2.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
-
-[[package]]
-name = "persistence"
-version = "0.5.0"
-dependencies = [
- "deepseek",
- "engine",
- "memory",
- "provider",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
- "util",
-]
 
 [[package]]
 name = "pin-project-lite"
@@ -1173,15 +1079,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "provider"
-version = "0.5.0"
-dependencies = [
- "futures-util",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -1542,24 +1439,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox"
-version = "0.5.0"
-dependencies = [
- "engine",
- "glob",
- "memory",
- "provider",
- "regex",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "util",
-]
-
-[[package]]
 name = "schannel"
 version = "0.1.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1737,18 +1616,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
 
 [[package]]
-name = "skills"
-version = "0.5.0"
-dependencies = [
- "glob",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "tracing",
-]
-
-[[package]]
 name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1775,24 +1642,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "subagent"
-version = "0.5.0"
-dependencies = [
- "engine",
- "futures-util",
- "memory",
- "observability",
- "provider",
- "schemars",
- "serde",
- "serde_json",
- "tokio",
- "tools",
- "tracing",
- "util",
-]
 
 [[package]]
 name = "subtle"
@@ -2056,29 +1905,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d56353a2a665ad0f41a421187180aab746c8c325620617ad883a99a1cbe66d2"
 
 [[package]]
-name = "tools"
-version = "0.5.0"
-dependencies = [
- "futures-core",
- "futures-executor",
- "futures-util",
- "provider",
- "schemars",
- "serde_json",
- "tools-macros",
- "tracing",
-]
-
-[[package]]
-name = "tools-macros"
-version = "0.5.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 3.0.3",
-]
-
-[[package]]
 name = "tower"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2195,13 +2021,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "util"
-version = "0.5.0"
-dependencies = [
- "time",
-]
 
 [[package]]
 name = "walkdir"

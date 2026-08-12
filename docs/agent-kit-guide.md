@@ -3,17 +3,18 @@
 This document explains how to use the NVIDIA OO Agents-style agent programming
 paradigm in Agent Oxide. The paradigm is provided by two new crates:
 
-| Crate | Location | Role |
-|-------|----------|------|
-| **`agent-macros`** | `extensions/agent-macros/` | Proc-macros (compile time): `#[derive(Agent)]` + `#[agent_impl]`, generating all the boilerplate |
-| **`agent-kit`** | `extensions/agent-kit/` | Runtime: `AgentBlueprint` trait, `run_generation`, `Strategy`, `ContextBlockHook`, `AgentAssembler` |
+| Component | Location | Role |
+|-----------|----------|------|
+| **`agent-oxide-macros`** | `agent_oxide-macros/` | Proc-macros (compile time): `#[derive(Agent)]` + `#[agent_impl]`, generating all the boilerplate |
+| **`agent_oxide::agent_kit`** | `src/agent_kit/` | Runtime: `AgentBlueprint` trait, `run_generation`, `Strategy`, `ContextBlockHook`, `AgentAssembler` |
 
-Design principle: **zero changes to `core/`**. The macro expansion compiles down
-to existing `Tool` trait, `ToolRegistry`, `engine::Agent`, and `AgentHook` calls;
-`into_agent()` produces a standard `engine::Agent<C>` that can be layered with
-existing components such as `SandboxHook` and `PersistenceHook`.
+Design principle: **zero changes to the core engine**. The macro expansion
+compiles down to existing `Tool` trait, `ToolRegistry`, `agent_oxide::engine::Agent`, and
+`AgentHook` calls; `into_agent()` produces a standard `agent_oxide::engine::Agent<C>` that
+can be layered with existing components such as `SandboxHook` and
+`PersistenceHook`.
 
-Three runnable, end-to-end examples live in `extensions/agent-kit/examples/`
+Three runnable, end-to-end examples live in `examples/`
 (`feedback_agent`, `inventory_agent`, `note_taking_agent`).
 
 ---
@@ -24,25 +25,23 @@ Three runnable, end-to-end examples live in `extensions/agent-kit/examples/`
 
 ```toml
 [dependencies]
-agent-kit = { path = "extensions/agent-kit" }
-
-[dependencies]            # or [dev-dependencies]
-agent-macros = { path = "extensions/agent-macros" }
-deepseek = { path = "core/deepseek" }
-tokio = { workspace = true }
+agent_oxide = "0.5"
+agent-oxide-macros = "0.5"        # or [dev-dependencies] if only examples use it
+tokio = { version = "1", features = ["full"] }
 ```
 
-> All macro-generated code references core crates, serde, and schemars through
-> `agent_kit::...` paths, so consumers do **not** need direct dependencies on
-> `core/provider`, `core/tools`, or `core/engine`.
+> All macro-generated code references `agent_oxide::...` paths (including
+> `agent_oxide::agent_kit::serde` / `agent_oxide::agent_kit::schemars`), so
+> consumers do **not** need direct dependencies on serde, schemars, or any
+> framework module beyond `agent_oxide` itself.
 
 ### 1.2 Minimal agent
 
 ```rust
-use agent_kit::schemars::JsonSchema;
-use agent_kit::serde::{Deserialize, Serialize};
-use agent_macros::{Agent, agent_impl};
-use deepseek::DeepSeekClient;
+use agent_oxide::schemars::JsonSchema;
+use agent_oxide::serde::{Deserialize, Serialize};
+use agent_oxide::{Agent, agent_impl};
+use agent_oxide::deepseek::DeepSeekClient;
 
 /// You are an agent specializing in analyzing customer feedback.   // ← struct doc = System Prompt
 #[derive(Clone, Agent)]
@@ -59,8 +58,8 @@ impl FeedbackAgent {
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(crate = "agent_kit::serde")]            // key: point the derives at the re-export paths
-#[schemars(crate = "agent_kit::schemars")]
+#[serde(crate = "agent_oxide::agent_kit::serde")]            // key: point the derives at the re-export paths
+#[schemars(crate = "agent_oxide::agent_kit::schemars")]
 struct Sentiment { label: String, score: f64 }
 
 #[tokio::main]
@@ -88,10 +87,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Applied to a struct, it generates:
 
 - `agent_client()` → `&C` (reference to the client field)
-- `agent_model()` → `String` (value of the `#[agent(model)]` field, or `agent_kit::DEFAULT_MODEL` = `deepseek-v4-pro`)
+- `agent_model()` → `String` (value of the `#[agent(model)]` field, or `agent_oxide::agent_kit::DEFAULT_MODEL` = `deepseek-v4-pro`)
 - `agent_system_prompt()` → `String` (the struct's doc comment)
 - `agent_context_prompt()` → `String` (rendered `#[context]` fields; empty string if none)
-- `into_agent(model)` / `into_agent_with(model, config)` → `engine::Agent<C>` (assembly)
+- `into_agent(model)` / `into_agent_with(model, config)` → `agent_oxide::engine::Agent<C>` (assembly)
 - the single `AgentBlueprint` trait impl (field half: system prompt, `#[tool]` field registration, context hook)
 
 **Field attributes**:
@@ -112,7 +111,7 @@ Applied to an `impl StructName` block, it dispatches on method shape:
 | Method shape | Handling |
 |--------------|----------|
 | `fn foo(&self, args) -> Ret { body }` (sync, with body) | The **original method is preserved** (still callable from Rust), plus a `Tool` adapter is generated and auto-registered |
-| `async fn foo(&self, args) -> Ret {}` (empty body) | **Generation method**: body replaced with an LLM call, return type wrapped as `Result<Ret, agent_kit::GenerationError>` |
+| `async fn foo(&self, args) -> Ret {}` (empty body) | **Generation method**: body replaced with an LLM call, return type wrapped as `Result<Ret, agent_oxide::agent_kit::GenerationError>` |
 | `async fn foo(&self, args) -> Ret { body }` (with body) | Ordinary async method, kept as-is, no tool generated |
 | `#[agent(skip)] fn ...` | Kept as-is |
 
@@ -145,7 +144,7 @@ async fn can_fulfill_order(&self, items: Vec<String>, budget: f64) -> OrderResul
 ```
 
 The macro replaces the body with a call equivalent to
-([`generation.rs`](../extensions/agent-kit/src/generation.rs#L103-L124)):
+([`generation.rs`](../src/agent_kit/generation.rs#L103-L124)):
 
 1. **prompt** = method doc + `\n\nArguments:\n- items: {:?}\n- budget: {:?}`
    (parameters must be `Debug`)
@@ -169,7 +168,7 @@ than `&self` are rejected.
 | `#[strategy(code_act, max_iterations = 15)]` | Cap the loop iterations | — |
 | `#[strategy(code_act, max_iterations = 10, max_retries = 3)]` | Configure both | — |
 
-Maps to the runtime [`Strategy`](../extensions/agent-kit/src/generation.rs#L38-L59) enum.
+Maps to the runtime [`Strategy`](../src/agent_kit/generation.rs#L38-L59) enum.
 
 ### 2.6 Structured output
 
@@ -178,8 +177,8 @@ Enabled automatically when the return type implements `Deserialize + JsonSchema`
 
 ```rust
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(crate = "agent_kit::serde")]
-#[schemars(crate = "agent_kit::schemars")]
+#[serde(crate = "agent_oxide::agent_kit::serde")]
+#[schemars(crate = "agent_oxide::agent_kit::schemars")]
 struct OrderResult {
     can_fulfill: bool,
     total_cost: f64,
@@ -233,7 +232,7 @@ Mechanics:
 ### 2.8 Assembling a full core-engine Agent (`into_agent`)
 
 `into_agent()` promotes your lightweight agent struct into a full
-`core::engine::Agent<C>` — the ReAct engine that powers the TUI itself.
+`agent_oxide::engine::Agent<C>` — the ReAct engine that powers the TUI itself.
 
 **Generation methods vs. the engine agent:**
 
@@ -270,7 +269,7 @@ Mechanics:
 
 ```rust
 // Style 1: chained builder.
-let config = agent_kit::BuildConfig::default()
+let config = agent_oxide::agent_kit::BuildConfig::default()
     .max_steps(50)
     .max_retries(3)
     .hook(SandboxHook::new(...))          // any AgentHook + 'static
@@ -278,7 +277,7 @@ let config = agent_kit::BuildConfig::default()
     .streaming(true);
 
 // Style 2: struct literal.
-let config = agent_kit::BuildConfig {
+let config = agent_oxide::agent_kit::BuildConfig {
     extra_hooks: vec![Box::new(MyLogHook)],
     ..Default::default()
 };
@@ -294,7 +293,7 @@ Notes:
   registration order in `the reference app` (SystemPrompt → Observability →
   Persistence → Skills → PlanMode → Profile → Todo → Compact → Sandbox).
 - **Generation methods bypass the hook pipeline.** `agent.classify(...)` and
-  friends never touch `extra_hooks`; only the `engine::Agent` produced by
+  friends never touch `extra_hooks`; only the `agent_oxide::engine::Agent` produced by
   `into_agent()` triggers them. Use `into_agent()` when you need sandbox or
   persistence.
 
@@ -307,8 +306,8 @@ Notes:
 3. `AgentAssembler::build()` → `EngineContext::builder(...)` → `Agent<C>`.
 
 `BuildConfig` / `AgentAssembler` live in
-[`builder.rs`](../extensions/agent-kit/src/builder.rs#L19-L155); the result is a
-standard `engine::Agent<C>`, structurally identical to what the TUI's
+[`builder.rs`](../src/agent_kit/builder.rs#L19-L155); the result is a
+standard `agent_oxide::engine::Agent<C>`, structurally identical to what the TUI's
 `build_coding_agent()` produces — they coexist freely.
 
 **Rule of thumb:** one-shot tasks that want type-safe returns → generation
@@ -322,22 +321,22 @@ The macros are pure sugar; everything is callable by hand:
 
 ```rust
 // Predict strategy, no tools.
-let r: Sentiment = agent_kit::run_generation::<_, Sentiment>(
+let r: Sentiment = agent_oxide::agent_kit::run_generation::<_, Sentiment>(
     agent.agent_client(),
     &agent.agent_model(),
     &format!("{}{}", agent.agent_system_prompt(), agent.agent_context_prompt()),
     "Classify the sentiment of the text.\n\nArguments:\n- text: {:?}",
     None,                                     // no tools
-    &agent_kit::Strategy::Predict { max_retries: 2 },
+    &agent_oxide::agent_kit::Strategy::Predict { max_retries: 2 },
 ).await?;
 
 // CodeAct strategy with tools.
-let mut reg = agent_kit::tools::ToolRegistry::new();
-agent_kit::AgentBlueprint::blueprint_register_tools(&agent, &mut reg);
-let out: String = agent_kit::run_generation::<_, String>(
+let mut reg = agent_oxide::agent_kit::tools::ToolRegistry::new();
+agent_oxide::agent_kit::AgentBlueprint::blueprint_register_tools(&agent, &mut reg);
+let out: String = agent_oxide::agent_kit::run_generation::<_, String>(
     agent.agent_client(), &agent.agent_model(), &system, &prompt,
     Some(&reg),
-    &agent_kit::Strategy::CodeAct { max_iterations: 10, max_retries: 2 },
+    &agent_oxide::agent_kit::Strategy::CodeAct { max_iterations: 10, max_retries: 2 },
 ).await?;
 ```
 
@@ -346,7 +345,7 @@ let out: String = agent_kit::run_generation::<_, String>(
 ## 4. How it works (quick tour)
 
 The `AgentBlueprint` trait
-([`blueprint.rs`](../extensions/agent-kit/src/blueprint.rs#L24-L65)) describes
+([`blueprint.rs`](../src/agent_kit/blueprint.rs#L24-L65)) describes
 how a user-defined struct presents itself to the runtime, split into two halves:
 
 - **field half** (generated by `#[derive(Agent)]`, the *only* trait impl):
@@ -365,13 +364,13 @@ defaults. Consequence: either macro alone compiles — an agent without
 1. **`Arc<RwLock<...>>: Serialize` not satisfied** — serde 1.0.229 moved the
    `Arc`/`Rc` Serialize impls behind the optional `rc` feature. agent-kit
    enables `features = ["rc"]` in its
-   [Cargo.toml](../extensions/agent-kit/Cargo.toml); if your own crate depends
+   [Cargo.toml](../Cargo.toml); if your own crate depends
    on serde directly, enable it there too.
 2. **Derive paths** — structured-output types must use
-   `#[serde(crate = "agent_kit::serde")]` +
-   `#[schemars(crate = "agent_kit::schemars")]`, otherwise the derives resolve
+   `#[serde(crate = "agent_oxide::agent_kit::serde")]` +
+   `#[schemars(crate = "agent_oxide::agent_kit::schemars")]`, otherwise the derives resolve
    against a different serde instance than the macro-generated
-   `agent_kit::serde::...` code (even at the same version, feature differences
+   `agent_oxide::agent_kit::serde::...` code (even at the same version, feature differences
    can surface as "two different serde versions" errors).
 3. **The agent struct must be `Clone`** (tool adapters hold `Arc<Self>`).
 4. **Generation-method parameters must be `Debug`** (rendered into the prompt);
@@ -379,13 +378,13 @@ defaults. Consequence: either macro alone compiles — an agent without
 5. **Examples read `DEEPSEEK_API` from the environment** (they do not load
    `.env`); without the key only blueprint checks run:
    ```bash
-   cargo run -p agent-kit --example inventory_agent
+   cargo run --example inventory_agent
    ```
 
 ## 6. Verification
 
 ```bash
-cargo test -p agent-kit -p agent-macros   # unit tests (context rendering, structured parsing, ...)
-cargo build -p agent-kit --examples       # all three examples compile
-cargo clippy -p agent-kit -p agent-macros --all-targets
+cargo test -p agent_oxide -p agent_oxide-macros   # unit tests (context rendering, structured parsing, ...)
+cargo build -p agent_oxide --examples       # all three examples compile
+cargo clippy -p agent_oxide -p agent_oxide-macros --all-targets
 ```

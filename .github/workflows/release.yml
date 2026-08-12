@@ -7,8 +7,9 @@ name: Release
 #   1. bump `version` in `[workspace.package]` (+ any `[Unreleased]` →
 #      released section in CHANGELOG.md), commit.
 #   2. `git tag v0.5.0 && git push origin v0.5.0`
-#   3. This workflow publishes all 16 crates in dependency order, then
-#      creates a GitHub Release.
+#   3. This workflow publishes the two crates (proc-macro first, then the
+#      umbrella `agent_oxide` that depends on it), then creates a GitHub
+#      Release.
 
 on:
   push:
@@ -37,17 +38,13 @@ jobs:
             exit 1
           fi
 
-      - name: Publish crates (dependency order)
+      - name: Publish crates (proc-macro first, then umbrella)
         run: |
           set -e
-          for crate in \
-            provider util tools-macros memory tools deepseek engine skills \
-            hooks observability persistence sandbox subagent \
-            agent-macros agent-kit agent_oxide
-          do
-            echo "── publishing $crate"
-            cargo publish -p "$crate"
-          done
+          echo "── publishing agent_oxide-macros"
+          cargo publish -p agent_oxide-macros
+          echo "── publishing agent_oxide"
+          cargo publish -p agent_oxide
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2

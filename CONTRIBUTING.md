@@ -42,9 +42,10 @@ and coverage on every push/PR — make sure these pass locally first.
   new code that way.
 - **Doc comments** — public items should carry doc comments; they show up
   on docs.rs and in the crate-level documentation.
-- **Proc-macro output paths** — macros expand to `::crate::`-style paths
-  (e.g. `::tools::`, `::agent_kit::`). When adding a proc macro, document
-  which dependencies consumers must add directly.
+- **Proc-macro output paths** — macros expand to absolute paths against
+  `agent_oxide` (e.g. `::agent_oxide::tools::`, `::agent_oxide::agent_kit::`).
+  When adding a proc macro, document which dependencies consumers must add
+  directly.
 
 ## Architecture map
 
@@ -53,9 +54,11 @@ core** (memory, tools, agent loop, hooks) and the **LLM client** layer
 (`LLMClient` trait). The **UI** and **Harness** layers are user-owned, built
 on top of these APIs.
 
-- `core/` — provider, deepseek, tools, tools-macros, memory, engine, util
-- `extensions/` — skills, compact (hooks), persistence, subagent,
-  observability, sandbox, agent-kit, agent-macros
+- `src/` — one module per subsystem: provider, deepseek, tools, memory,
+  util, engine, skills, hooks, persistence, subagent, observability,
+  sandbox, agent_kit
+- `agent_oxide-macros/` — the proc-macro crate (`#[derive(Agent)]`,
+  `#[agent_impl]`, `#[tool]`)
 - `docs/` — guides (beginner, senior, sandbox, agent-kit, nooa, harness-ui)
 
 See `docs/` for details; `AGENT_OXIDE.md` is the archived agent-guidance

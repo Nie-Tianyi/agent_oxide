@@ -10,14 +10,12 @@ targets = [
 ]
 
 [advisories]
-version = 2
-# Database freshness window; ignored when the cache is missing (CI installs
-# the latest db via cargo-deny's fetch).
+# cargo-deny 0.18+ schema: vulnerability/notice severities were removed
+# (those advisories now always error); `unmaintained` is a scope enum
+# (all | workspace | transitive | none), not a severity.
 db-path = "$CARGO_HOME/advisory-dbs"
-vulnerability = "deny"
-unmaintained = "warn"
+unmaintained = "workspace"
 yanked = "warn"
-notice = "warn"
 
 [licenses]
 # Common permissive licenses used across the dependency tree.
@@ -37,7 +35,8 @@ allow = [
   "MPL-2.0",
 ]
 confidence-threshold = 0.8
-unlicensed = "deny"
+# `unlicensed` was removed in cargo-deny 0.20: licenses not in `allow` are
+# denied implicitly; use `clarify` for crates that need manual attribution.
 
 [bans]
 multiple-versions = "warn"

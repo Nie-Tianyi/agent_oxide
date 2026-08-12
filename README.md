@@ -4,6 +4,24 @@ A modular agent framework for Rust — a ReAct loop engine, an LLM provider
 abstraction, a tool system, and a rich set of extensions (sandbox,
 persistence, skills, observability, subagents).
 
+> **Architecture:** Agent Oxide realizes a four-layer design for the Agenty
+> project — top to bottom: **(UI)** TUI / GUI / CLI / WebUI; **(Harness)**
+> multi-agent orchestration, skills, plugins; **(Agent core)** memory &
+> memory management, the `Tool` trait, the agent loop, hooks; **(LLM client)**
+> provider traits — `LLMClient`, `Embedding`, and future `VLM` /
+> image-generation traits. This library implements the **bottom two layers**
+> (Agent core and LLM client); you provide the **top two** — your own UI
+> layer, and the Harness layer (multi-agent orchestration, skills, plugins)
+> built on top of the core APIs. A DeepSeek reference client ships with the
+> framework.
+
+| Layer | Contents | Implemented by |
+| ----- | -------- | -------------- |
+| 1 — UI | TUI / GUI / CLI / WebUI | **You** |
+| 2 — Harness | Multi-agent orchestration, SKILLs, plugins | **You** |
+| 3 — Agent core | Memory & memory management, `Tool` trait, agent loop, hooks | **Agent Oxide** |
+| 4 — LLM client | `LLMClient` trait, `Embedding` trait; future: `VLM`, image generation | **Agent Oxide** |
+
 ```toml
 [dependencies]
 agent_oxide = "0.5"
@@ -28,20 +46,84 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## NOOA — NVIDIA OO Agents style (Agent Kit)
+
+> **Flagship ergonomics.** NOOA (NVIDIA OO Agents) lets you program an agent
+> as a plain Rust struct: **class doc = system prompt, sync methods = tools,
+> async methods = LLM generations, Pydantic-style returns = structured
+> output.** It compiles down to the core engine (`Tool` trait, `ToolRegistry`,
+> `engine::Agent`) with zero changes to `core/`, and coexists freely with the
+> imperative `Agent::builder(...)` API above.
+
+Provided by two crates — `agent-macros` (`#[derive(Agent)]` + `#[agent_impl]`,
+compile time) and `agent-kit` (runtime: `AgentBlueprint`, `Strategy`,
+`BuildConfig`). Add both to your dependencies and write:
+
+```rust
+use agent_kit::schemars::JsonSchema;
+use agent_kit::serde::{Deserialize, Serialize};
+use agent_macros::{Agent, agent_impl};
+use deepseek::DeepSeekClient;
+
+/// You are an agent specializing in analyzing customer feedback.   // ← struct doc = system prompt
+#[derive(Clone, Agent)]
+struct FeedbackAgent {
+    #[agent(client)]                          // ← marks the LLM client field
+    client: DeepSeekClient,
+}
+
+#[agent_impl]
+impl FeedbackAgent {
+    /// Analyze the sentiment and key topics of customer feedback in one sentence.  // ← method doc = method prompt
+    async fn analyze_feedback(&self, text: String) -> String {}  // empty body = LLM generation
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let agent = FeedbackAgent {
+        client: DeepSeekClient::new(std::env::var("DEEPSEEK_API")?),
+    };
+
+    // Generation method: one-shot call implemented by the LLM.
+    let s = agent.analyze_feedback("Great product, but shipping was slow".into()).await?;
+    println!("{s}");
+
+    // Or promote to a full core-engine agent (ReAct loop + hook pipeline):
+    let engine_agent = agent.into_agent("deepseek-v4-pro")?;
+    Ok(())
+}
+```
+
+Core concepts at a glance:
+
+| Concept | Syntax | Meaning |
+| ------- | ------- | ------- |
+| System prompt | `/// struct doc comment` | The agent's system prompt |
+| Tool | `fn method(&self, ...) { body }` | Sync method = tool; signature auto-derives the JSON Schema |
+| Generation | `async fn method(&self, ...) {}` | Empty-body async fn = LLM generation |
+| Structured output | `-> T where T: Deserialize + JsonSchema` | Pydantic-style typed returns (auto-retried on parse failure) |
+| Strategy | `#[strategy(predict)]` / `#[strategy(code_act, max_iterations = 15)]` | Single LLM call vs full ReAct loop with tools |
+| Context | `#[context(static)]` / `#[context(dynamic)]` | Context blocks, re-rendered before every LLM call |
+| Full agent | `.into_agent(model)` / `.into_agent_with(model, BuildConfig)` | Promote to `engine::Agent` — all hooks apply (sandbox, persistence, observability, compaction) |
+
+**Rule of thumb:** one-shot tasks that want type-safe returns → **generation
+methods**; conversations, security, persistence → **`into_agent()`**. Full
+reference: [docs/agent-kit-guide.md](docs/agent-kit-guide.md).
+
 ## Crates
 
 The umbrella crate re-exports every sub-crate, so `use agent_oxide::...`
 gives you the whole framework:
 
 | Module | Crate | Role |
-|--------|-------|------|
+| ------ | ----- | ---- |
 | `agent_oxide::provider` | `provider` | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
 | `agent_oxide::deepseek` | `deepseek` | DeepSeek API client |
 | `agent_oxide::memory` | `memory` | Conversation memory buffer |
 | `agent_oxide::tools` | `tools` | `Tool` trait, `ToolRegistry`, `#[tool]` macro |
 | `agent_oxide::engine` | `engine` | Agent ReAct loop, `AgentHook`, `AgentEvent` |
 | `agent_oxide::util` | `util` | Shared utilities |
-| `agent_oxide::agent_kit` | `agent-kit` | NVIDIA OO Agents-style ergonomics (`#[derive(Agent)]`) |
+| `agent_oxide::agent_kit` | `agent-kit` | NOOA — NVIDIA OO Agents-style ergonomics (`#[derive(Agent)]`) |
 | `agent_oxide::hooks` | `hooks` | Compaction hooks (micro/macro) |
 | `agent_oxide::observability` | `observability` | Full-chain tracing |
 | `agent_oxide::persistence` | `persistence` | Conversation save/load |
@@ -93,6 +175,8 @@ impl EchoTool {
 
 ## Architecture
 
+### Overview
+
 - **Engine** — the ReAct loop runs in a dedicated Tokio task; hooks
   (`AgentHook`) observe or intercept every lifecycle event; streaming
   `AgentEvent`s power real-time UIs.
@@ -106,18 +190,246 @@ impl EchoTool {
   LLM-generated thread titles.
 - **Skills** — `.md` files with YAML frontmatter discovered at startup
   and injected as system messages.
-- **Agent Kit** — NVIDIA OO Agents-style ergonomics: class-doc = system
-  prompt, sync methods = tools, async methods = LLM generations.
+- **Agent Kit** — NOOA (NVIDIA OO Agents-style) ergonomics: class-doc =
+  system prompt, sync methods = tools, async methods = LLM generations.
 
-See `docs/` for the senior developer guide, beginner guide, sandbox
-architecture, and agent-kit guide.
+Rust 2024 edition, Tokio async. The umbrella `agent_oxide` crate re-exports
+all sub-crates; each sub-crate is also published independently on crates.io.
+The codebase uses Rust 2024 native async fn in traits (RPITIT) — do **NOT**
+use the `async-trait` crate. Prefer sync traits for dyn-dispatch; keep
+async work in dedicated components.
+
+### Workspace structure
+
+```text
+agent_oxide/
+├── Cargo.toml              # [package] agent_oxide umbrella + [workspace]
+├── src/lib.rs              # umbrella re-exports + prelude
+├── core/
+│   ├── provider/           # LLMClient trait + shared types
+│   ├── deepseek/           # DeepSeekClient — implements LLMClient
+│   ├── tools/              # Tool trait, ToolRegistry, ProgressStream
+│   ├── tools-macros/       # #[tool] proc macro
+│   ├── memory/             # Memory buffer, PendingHints
+│   ├── util/               # Shared workspace utilities (iso8601_now)
+│   └── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
+├── extensions/
+│   ├── skills/             # SkillDef, SkillRegistry — skill discovery & loading
+│   ├── compact/            # hooks crate — MicroCompactHook + MacroCompactHook
+│   ├── persistence/        # Conversation persistence — save/load threads, PersistenceHook
+│   ├── subagent/           # SubagentTool — spawn child agents as tools
+│   ├── observability/      # TraceEvent, TraceStore, RunMetrics — full-chain tracing
+│   ├── sandbox/            # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, etc.
+│   ├── agent-kit/          # NOOA — NVIDIA OO Agents-style ergonomics
+│   └── agent-macros/       # #[derive(Agent)] + #[agent_impl] proc macros
+└── docs/
+    ├── beginner-developer-guide.md
+    ├── senior-developer-guide.md
+    ├── sandbox-architecture.md
+    └── agent-kit-guide.md
+```
+
+### Dependency graph
+
+```text
+core/
+    provider (no internal deps)
+        ↑
+        ├── deepseek ──── (impl LLMClient)
+        ├── tools ─────── (uses provider + tools-macros)
+        ├── memory ────── (uses provider)
+        ↑
+        └── engine ────── (uses provider + tools + memory)
+                ↑
+extensions/
+    skills ────────────── (no internal deps)
+    hooks ─────────────── (uses provider + memory + engine)
+    persistence ───────── (uses provider + engine + memory + deepseek + util)
+    observability ─────── (uses provider + engine + memory)
+    sandbox ───────────── (uses engine + memory + provider + util)
+    subagent ──────────── (uses provider + tools + engine + memory + observability)
+    agent-kit ─────────── (uses provider + tools + engine + memory)
+    agent-macros ──────── (proc macro, no internal deps)
+                ↑
+umbrella
+    agent_oxide ───────── (re-exports every crate)
+```
+
+### Key patterns
+
+#### `LLMClient` trait
+
+Abstraction over LLM providers. Uses Rust 2024 native async fn (NOT
+`#[async_trait]`). `DeepSeekClient` is the reference implementation.
+Implement this trait to support a new provider.
+
+#### `Tool` trait
+
+Sync and object-safe. `execute_stream()` returns `ProgressStream` — short
+tools emit a single `Progress::Done`, long-running tools (shell) emit
+`Progress::InProgress` updates then `Progress::Done`. Use
+`tokio::sync::mpsc` from a spawned thread for async I/O.
+
+#### `#[tool]` proc macro
+
+Annotate a struct with `#[tool(name = "...", description = "...", args = ArgsType)]`.
+Generates `Tool` trait impl — the struct must define an inherent
+`execute_stream(&self, args: ArgsType) -> Result<ProgressStream, ToolError>`.
+JSON Schema is lazily generated from `ArgsType` via `schemars`.
+
+> Note: the macro expands to `::tools::` / `::serde_json::` paths, so
+> consuming crates need `tools` + `serde_json` as direct dependencies
+> (standard proc-macro behaviour, like serde/tokio).
+
+#### `AgentHook` trait — 9 lifecycle callbacks
+
+All have default no-ops. Naming convention:
+
+| Prefix | Meaning |
+| ------ | ------- |
+| `on_<event>` | Pure notification — cannot intervene |
+| `before_<action>` | Can intervene — return `Err` to block |
+| `after_<action>` | Observe result — cannot intervene |
+
+Callbacks (all receive `session_id: &str`):
+
+- `on_run_start(&str, user_input: &str, memory: &SharedMemory)`
+- `on_run_finish(&str, outcome: &RunOutcome, memory: &SharedMemory)`
+- `on_step_start(&str, step: usize, max_steps: usize)`
+- `on_llm_start(&str, memory: &SharedMemory)`
+- `on_llm_end(&str, response: &Message)`
+- `on_llm_error(&str, error: &ProviderError, attempt: usize, will_retry: bool)`
+- `before_tool_call(&str, tool_call: &ToolCall) -> Result<(), AgentError>`
+- `after_tool_call(&str, tool_call: &ToolCall, observation: &str)`
+- `on_tool_failed(&str, tool_call: &ToolCall, error: &str)`
+
+Hooks run in registration order. For async work inside sync hooks (e.g. LLM
+summarisation), use `engine::block_on` — a bare `Handle::block_on` panics on
+tokio worker threads.
+
+#### `AgentEvent` stream
+
+Single `mpsc::unbounded_channel`. Variants:
+
+| Event | When |
+| ----- | ---- |
+| `RunStarted { session_id, user_input }` | New task begins |
+| `Token(String)` / `ReasoningToken(String)` | LLM output streaming |
+| `ToolCallStart { id, name }` | Tool name known before args |
+| `ToolCall { id, name, arguments, origin }` | Before tool execution |
+| `ToolSuccessful { id, name, output }` | Tool completed |
+| `ToolRejected { id, name, reason }` | Hook blocked tool |
+| `ToolFailure { id, name, error }` | Tool execution failed |
+| `ToolProgress { id, name, message }` | Real-time progress |
+| `InterventionRequired(InterventionRequest)` | Hook needs user decision |
+| `RunCompleted { answer }` | Success |
+| `RunFailed { error }` | Error |
+| `Cancelled` | User cancelled |
+| `Done` | Sentinel — always last |
+
+`CallOrigin::Llm` vs `CallOrigin::User` distinguishes LLM tool calls from
+user-invoked tool calls.
+
+#### `AgentBuilder` vs `EngineContextBuilder`
+
+- `Agent::builder(client, model)` — simple API: auto-creates Memory, seeds
+  system prompt, collects tools into ToolRegistry.
+- `EngineContext::builder(client, memory, tools, model)` — advanced API:
+  supply Memory and ToolRegistry explicitly, configure hooks, max_steps,
+  max_retries, streaming, pending_hints.
+
+#### Two-tier compaction (hooks crate)
+
+1. **MicroCompact** — `on_llm_start()` clears old tool outputs from
+   high-volume tools (`read`, `shell`, `grep`, `glob`, `edit`, `write`, `ls`)
+   in-place, keeping the most recent N intact (default 10).
+2. **MacroCompact** — `on_llm_start()` checks `prompt_tokens` from the last
+   `Usage` against a token threshold (default 1,000,000 tokens); when over,
+   drains old non-System messages (keeping last N), calls a compact model
+   for summarisation via `engine::block_on`, inserts summary as System
+   message.
+
+Key constants in `extensions/compact/src/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
+`DEFAULT_COMPACT_CHAR_LIMIT`, `DEFAULT_KEEP_LAST_N`, `DEFAULT_KEEP_RECENT_TOOL_OUTPUTS`.
+
+#### Sandbox (defense in depth)
+
+| Layer | Component | Role |
+| ----- | --------- | ---- |
+| 1 | `WorkspaceFs` | Path sandbox — canonicalization, file-size caps, extension blocklist, hidden-file protection, binary detection, TOCTOU re-check; read-only roots are readable but never writable |
+| 2 | `ShellFilter` | Command classification — auto-approve, deny patterns, prompt user for rest |
+| 3 | `SandboxHook` | Orchestrator — checks quotas, classifies commands, prompts user via `InterventionRequired` + `ResponseRouter`, writes audit log |
+| 4 | `EnvSanitizer` | Clears dangerous env vars before spawning child processes |
+| 5 | Watchdog | Kills process tree on timeout (`taskkill /F /T` on Windows) |
+
+Config: `SandboxConfig::load(path)` — path provided by the caller; safe
+defaults if the file is missing. Shell output is capped at **100 KB**.
+Default audit log path: `.agent/audit.jsonl` (relative to workspace root).
+
+#### Observability (full-chain tracing)
+
+`ObservabilityHook` captures lifecycle events with timing data and token
+counts via a side channel (`Arc<TraceStore>`) shared between the agent task
+and the UI. `TraceStore` is a thread-safe ring buffer (4096 entries) with
+lock-free `RunMetrics` atomics. Trace events flow via the `tracing` crate.
+
+#### Skills system
+
+`SkillRegistry` (extensions/skills) discovers and parses `.md` skill files
+(YAML frontmatter + body) from user-configured skill directories. The
+registry is provider-agnostic; consuming applications wire it to their own
+`SkillTool` / `SkillHook`.
+
+#### Persistence
+
+`PersistenceConfig` (defaults: `.agent/threads`, `.agent/current` under the
+workspace root) drives thread save/load. `PersistenceHook` auto-saves after
+each run; thread names are LLM-generated from the first user query via a
+flash model, with a filesystem-safe sanitizer.
+
+#### Agent Kit (NVIDIA OO Agents style)
+
+`#[derive(Agent)]` + `#[agent_impl]` macros map the NOOA (NVIDIA OO Agents)
+paradigm onto the core API: class doc = system prompt, sync methods =
+tools, async methods = LLM generations, Pydantic-style returns = structured
+output. See the NOOA section above and `docs/agent-kit-guide.md`.
+
+#### `ResponseRouter`
+
+Maps `request_id` → `SyncSender<InterventionResponse>`. Multiple components
+can need user intervention simultaneously — each registers its own channel.
+The consuming application routes responses back through the router.
+
+### Build & Test
+
+```bash
+cargo build                        # debug build (umbrella crate)
+cargo build --all                  # build all workspace crates
+cargo build --release              # release build
+cargo test --all                   # run all tests
+cargo test -p engine               # one crate's tests
+cargo test -p engine <name>        # single test by name substring
+cargo clippy --all                 # lint all crates
+```
+
+Tests are **inline** (`#[cfg(test)] mod tests { ... }`) co-located with source
+— no separate `tests/` directories.
 
 ## Environment
 
 | Var | Purpose |
-|-----|---------|
+| --- | ------- |
 | `DEEPSEEK_API` | DeepSeek API key (required by the `deepseek` client) |
 | `BASE_URL` | API base URL (default `https://api.deepseek.com`) |
+
+## Documentation
+
+| Doc | For |
+| --- | --- |
+| [beginner-developer-guide.md](docs/beginner-developer-guide.md) | Build your first AI agent in 10 minutes — no prior agent experience needed |
+| [senior-developer-guide.md](docs/senior-developer-guide.md) | In-depth reference for experienced Rust developers — internals, trait implementations, advanced patterns, design decisions |
+| [sandbox-architecture.md](docs/sandbox-architecture.md) | Sandbox architecture — the full security check chain of an LLM tool call |
+| [agent-kit-guide.md](docs/agent-kit-guide.md) | NOOA full reference — macros, strategies, structured output, `into_agent` |
 
 ## License
 

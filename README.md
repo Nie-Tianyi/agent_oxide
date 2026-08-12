@@ -430,6 +430,8 @@ Tests are **inline** (`#[cfg(test)] mod tests { ... }`) co-located with source
 | [senior-developer-guide.md](docs/senior-developer-guide.md) | In-depth reference for experienced Rust developers — internals, trait implementations, advanced patterns, design decisions |
 | [sandbox-architecture.md](docs/sandbox-architecture.md) | Sandbox architecture — the full security check chain of an LLM tool call |
 | [agent-kit-guide.md](docs/agent-kit-guide.md) | NOOA full reference — macros, strategies, structured output, `into_agent` |
+| [nooa-agent-guide.md](docs/nooa-agent-guide.md) | Step-by-step tutorial — define your first NOOA agent, one concept at a time |
+| [harness-ui-guide.md](docs/harness-ui-guide.md) | Build your own Harness (orchestration, SKILLs, plugins) and UI layers with the core APIs |
 
 ## License
 

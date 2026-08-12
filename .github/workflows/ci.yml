@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy --all --all-targets
+      - run: cargo clippy --all --all-targets --locked
 
   test:
     name: test
@@ -36,7 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo test --all
+      - run: cargo test --all --locked
 
   msrv:
     name: msrv (1.85)
@@ -44,7 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.85
-      - run: cargo build --all
+      # --locked: fail loudly instead of silently re-resolving the lockfile
+      # (newest deps may require newer rustc than the MSRV).
+      - run: cargo build --all --locked
 
   audit:
     name: audit

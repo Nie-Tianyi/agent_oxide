@@ -1,6 +1,11 @@
 [package]
 name = "observability"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 
 [dependencies]
@@ -8,3 +13,4 @@ tracing = { workspace = true }
 provider = { version = "0.5.0", path = "../../core/provider" }
 engine = { version = "0.5.0", path = "../../core/engine" }
 memory = { version = "0.5.0", path = "../../core/memory" }
+util = { version = "0.5.0", path = "../../core/util" }

@@ -1,6 +1,11 @@
 [package]
 name = "sandbox"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "Sandbox runtime components — command filtering, environment sanitization, resource tracking, audit logging, and configuration"
 

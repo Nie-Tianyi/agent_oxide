@@ -1,99 +1,101 @@
-# 沙箱架构文档
+# Sandbox Architecture
 
-本文档描述了 Agent Oxide 中一个 LLM 工具调用从发起到执行完毕所经过的完整安全检查链。
-
----
-
-## 一图总览
-
-![沙箱权限检查总览](./assets/鉴权检查.jpg)
+This document describes the complete security-check chain that an LLM tool call passes through — from initiation to execution — in Agent Oxide.
 
 ---
 
-## 第零步：Agent Loop 调度
+## Overview
 
-代码位置：[`core/engine/src/agent.rs`](../core/engine/src/agent.rs#L217-L269)
-![Agent Loop权限检查流程](./assets/sandbox.png)
-
-当前注册的唯一 Hook 是 `SandboxHook`
+![Sandbox permission checks overview](./assets/鉴权检查.jpg)
 
 ---
 
-## 第一步：SandboxHook::before_tool_call()
+## Step 0: Agent Loop Dispatch
 
-代码位置：[`extensions/sandbox/src/sandbox_hook.rs`](../extensions/sandbox/src/sandbox_hook.rs)
+Code: [`core/engine/src/agent.rs`](../core/engine/src/agent.rs#L217-L269)
+![Agent Loop permission-check flow](./assets/sandbox.png)
 
-![before_tool_call工具调用权限检查](./assets/pre-hook.png)
+The only hook currently registered is `SandboxHook`.
 
-### ShellFilter 分类优先级
+---
 
+## Step 1: SandboxHook::before_tool_call()
+
+Code: [`extensions/sandbox/src/sandbox_hook.rs`](../extensions/sandbox/src/sandbox_hook.rs)
+
+![before_tool_call tool-call permission check](./assets/pre-hook.png)
+
+### ShellFilter classification priority
+
+```text
+Classification priority (top to bottom, first match wins):
+
+1. Strict allowlist   →  binary not in allowlist? → Blocked
+2. Deny patterns      →  full command matches regex? → Blocked
+3. Auto-approve       →  command prefix matches?  → AutoApproved
+4. Fallthrough        →  nothing above matched   → RequiresApproval
 ```
-分类优先级（从上到下，命中即停止）:
 
-1. Strict allowlist   →  binary 不在白名单? → Blocked
-2. Deny patterns      →  完整命令匹配正则?   → Blocked
-3. Auto-approve       →  命令前缀匹配?       → AutoApproved
-4. Fallthrough        →  以上都不匹配        → RequiresApproval
-```
-
-代码位置：[`extensions/sandbox/src/shell_filter.rs`](../extensions/sandbox/src/shell_filter.rs#L77-L117)
+Code: [`extensions/sandbox/src/shell_filter.rs`](../extensions/sandbox/src/shell_filter.rs#L77-L117)
 
 ---
 
-## 第二步：工具执行阶段
+## Step 2: Tool Execution Phase
 
-### 文件工具 (read / write / edit / glob / grep / ls)
+### File tools (read / write / edit / glob / grep / ls)
 
-所有文件工具共享 `Arc<WorkspaceFs>`，在执行阶段经过以下检查：
+All file tools share an `Arc<WorkspaceFs>` and go through the following checks during execution:
 
-![文件工具权限检查](./assets/toolcall.png)
+![File tool permission checks](./assets/toolcall.png)
 
-代码位置：[`extensions/sandbox/src/fs.rs`](../extensions/sandbox/src/fs.rs)
+Code: [`extensions/sandbox/src/fs.rs`](../extensions/sandbox/src/fs.rs)
 
-### Shell 工具 (shell)
+### Shell tool (shell)
 
-![Shell调用权限检查](./assets/shellexe.png)
+![Shell call permission check](./assets/shellexe.png)
 
-代码位置：
-- ShellTool: [`extensions/sandbox/src/shell_filter.rs`](../extensions/sandbox/src/shell_filter.rs)（工具实体在参考应用 loomis: `bins/loomis/src/tools/shell.rs`）
+Code:
+
+- ShellTool: [`extensions/sandbox/src/shell_filter.rs`](../extensions/sandbox/src/shell_filter.rs) (the tool itself lives in the reference app: `bins/loomis/src/tools/shell.rs`)
 - EnvSanitizer: [`extensions/sandbox/src/env_sanitizer.rs`](../extensions/sandbox/src/env_sanitizer.rs)
 
 ---
 
-## 第三步：SandboxHook::after_tool_call()
+## Step 3: SandboxHook::after_tool_call()
 
-![记录审查结果](./assets/auditlogger.png)
+![Recording the review result](./assets/auditlogger.png)
 
-代码位置：
+Code:
+
 - ResourceTracker: [`extensions/sandbox/src/resource_tracker.rs`](../extensions/sandbox/src/resource_tracker.rs)
 - AuditLogger: [`extensions/sandbox/src/audit_logger.rs`](../extensions/sandbox/src/audit_logger.rs)
 
 ---
 
-## 检查清单
+## Check Checklist
 
-一个 LLM 发起的工具调用经过以下**全部检查**才能成功执行：
+A tool call initiated by the LLM must pass **all** of the following checks before it can execute:
 
-| # | 在哪 | 检查内容 | 失败后果 |
-|---|------|----------|----------|
-| 1 | `ResourceTracker` | 会话总操作数是否超配额 | 调用被拒绝 |
-| 2 | `ResourceTracker` | 并发 Shell 数是否超上限 | 调用被拒绝 |
-| 3 | `ShellFilter` | 命令是否在严格白名单内 | 直接阻止 |
-| 4 | `ShellFilter` | 命令是否匹配 deny_pattern | 直接阻止 |
-| 5 | `ShellFilter` | 命令是否需要用户确认 | TUI 弹窗 |
-| 6 | `WorkspaceFs::resolve` | 路径是否逃逸工作区 | InvalidArgs |
-| 7 | `WorkspaceFs::resolve` | TOCTOU 二次校验 | PathEscapesWorkspace |
-| 8 | `WorkspaceFs::read` | 文件大小 ≤ max_read_bytes | FileTooLarge |
-| 9 | `WorkspaceFs::write` | 内容大小 ≤ max_write_bytes | FileTooLarge |
-| 10 | `WorkspaceFs::write` | 扩展名不在黑名单 | ExtensionBlocked |
-| 11 | `WorkspaceFs::write` | 内容无 NULL 字节 | BinaryContentDetected |
-| 12 | `WorkspaceFs::write` | 非隐藏文件 (.开头) | HiddenFileBlocked |
-| 13 | `ShellFilter` (二次) | ShellTool 执行前再分类 | ToolError::Execution |
-| 14 | `EnvSanitizer` | 环境变量清洗 | (不失败，但限制暴露面) |
-| 15 | `Watchdog` | 进程超时杀 | 进程终止 |
-| 16 | 输出截断 | stdout+stderr ≤ 100KB | 截断并标记 |
+| # | Where | Check | Failure result |
+| --- | --- | --- | --- |
+| 1 | `ResourceTracker` | Total operations for the session within quota | Call rejected |
+| 2 | `ResourceTracker` | Concurrent shell count under the limit | Call rejected |
+| 3 | `ShellFilter` | Command in the strict allowlist | Blocked immediately |
+| 4 | `ShellFilter` | Command matches a deny_pattern | Blocked immediately |
+| 5 | `ShellFilter` | Command requires user confirmation | TUI prompt |
+| 6 | `WorkspaceFs::resolve` | Path does not escape the workspace | InvalidArgs |
+| 7 | `WorkspaceFs::resolve` | TOCTOU re-check | PathEscapesWorkspace |
+| 8 | `WorkspaceFs::read` | File size ≤ max_read_bytes | FileTooLarge |
+| 9 | `WorkspaceFs::write` | Content size ≤ max_write_bytes | FileTooLarge |
+| 10 | `WorkspaceFs::write` | Extension not on the blocklist | ExtensionBlocked |
+| 11 | `WorkspaceFs::write` | No NUL bytes in content | BinaryContentDetected |
+| 12 | `WorkspaceFs::write` | Not a hidden file (starts with `.`) | HiddenFileBlocked |
+| 13 | `ShellFilter` (second pass) | Re-classified before ShellTool executes | ToolError::Execution |
+| 14 | `EnvSanitizer` | Environment sanitization | (does not fail, but limits the attack surface) |
+| 15 | `Watchdog` | Process killed on timeout | Process terminated |
+| 16 | Output truncation | stdout + stderr ≤ 100KB | Truncated and marked |
 
-检查 3-5 的决策由 `.agent/config.toml` 控制：
+Checks 3–5 are controlled by `.agent/config.toml`:
 
 ```toml
 [sandbox.shell.auto_approve]
@@ -103,21 +105,21 @@ prefixes = ["cargo", "git", "npm", ...]
 patterns = ["rm -rf\\s+(/|~)", "sudo\\s+", "shutdown", ...]
 
 [sandbox.shell.allowed_commands]
-# binaries = ["cargo", "git"]  # 取消注释启用严格白名单
+# binaries = ["cargo", "git"]  # uncomment to enable the strict allowlist
 ```
 
 ---
 
-## 关键设计原则
+## Key Design Principles
 
-1. **双重防线** — Hook 层做策略判断（允许/阻止/询问），工具层做技术强制执行。即使 Hook 层被绕过（例如未来新增其他 Hook），工具层的 ShellFilter 仍会拦截。
+1. **Two lines of defense** — the hook layer makes policy decisions (allow / block / ask), while the tool layer enforces the policy technically. Even if the hook layer is bypassed (for example by adding other hooks in the future), the tool layer's ShellFilter still intercepts.
 
-2. **Fail closed** — 任何检查失败都阻止执行。配置缺失时使用最严格的安全默认值。
+2. **Fail closed** — any check failure blocks execution. When configuration is missing, the strictest safe defaults are used.
 
-3. **纵深防御** — ShellFilter 在 Hook 层 (`before_tool_call`) 和 ShellTool 层 (`execute`) 各执行一次，互为备份。
+3. **Defense in depth** — ShellFilter runs once in the hook layer (`before_tool_call`) and once in the ShellTool layer (`execute`), acting as backups for each other.
 
-4. **全链路审计** — 从分类 → 决策 → 执行 → 结果，每一步都记录到 `.agent/audit.jsonl`，事后可追溯。
+4. **Full-chain auditing** — from classification → decision → execution → result, every step is recorded to `.agent/audit.jsonl` for later traceability.
 
-5. **同步执行** — `Tool::execute` 和 `AgentHook` 方法都是同步的。Shell 命令阻塞 tokio worker 线程直到完成（或超时）。对于短命令（<30s）这是可接受的；长期来看可以迁移到 `spawn_blocking`。
+5. **Synchronous execution** — `Tool::execute` and `AgentHook` methods are synchronous. Shell commands block the tokio worker thread until completion (or timeout). This is acceptable for short commands (<30s); long-term this can migrate to `spawn_blocking`.
 
-6. **配置即策略** — 所有安全检查的行为都不硬编码在代码中，而是由 `SandboxConfig` 驱动。用户可以通过 `.agent/config.toml` 调节安全等级。
+6. **Configuration as policy** — the behavior of every security check is not hardcoded but driven by `SandboxConfig`. Users can tune the security level through `.agent/config.toml`.

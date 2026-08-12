@@ -1,6 +1,11 @@
 [package]
 name = "engine"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "Agent engine — ReAct loop, AgentHook lifecycle, AgentEvent streaming"
 

@@ -81,21 +81,21 @@ impl AuditLogger {
         }
 
         // Append to file
-        if let Some(file_mutex) = self.file.as_ref()
-            && let Ok(mut file) = file_mutex.lock()
-        {
-            match serde_json::to_string(&entry) {
-                Ok(json) => {
-                    if let Err(e) = writeln!(file, "{json}") {
-                        tracing::error!(
-                            path = %self.path.display(),
-                            error = %e,
-                            "Failed to write audit log entry"
-                        );
+        if let Some(file_mutex) = self.file.as_ref() {
+            if let Ok(mut file) = file_mutex.lock() {
+                match serde_json::to_string(&entry) {
+                    Ok(json) => {
+                        if let Err(e) = writeln!(file, "{json}") {
+                            tracing::error!(
+                                path = %self.path.display(),
+                                error = %e,
+                                "Failed to write audit log entry"
+                            );
+                        }
                     }
-                }
-                Err(e) => {
-                    tracing::error!(error = %e, "Failed to serialize audit log entry");
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to serialize audit log entry");
+                    }
                 }
             }
         }

@@ -102,7 +102,8 @@ pub fn decode_stdout(bytes: &[u8]) -> String {
 
 /// Truncate a string at `max` bytes, preserving a valid UTF-8 boundary.
 ///
-/// Uses [`str::floor_char_boundary`] (stable since Rust 1.48) to find the
+/// Uses [`util::floor_char_boundary`] (MSRV-compatible stand-in for
+/// [`str::floor_char_boundary`], stable since Rust 1.91) to find the
 /// nearest character boundary at or below `max`, ensuring the result is
 /// always valid UTF-8. Appends a `"…\n[output truncated at {max} bytes]"`
 /// suffix when truncation occurs.
@@ -110,7 +111,7 @@ pub fn truncate_output(s: &str, max: usize) -> String {
     if s.len() <= max {
         s.to_string()
     } else {
-        let boundary = s.floor_char_boundary(max);
+        let boundary = util::floor_char_boundary(s, max);
         format!("{}…\n[output truncated at {max} bytes]", &s[..boundary])
     }
 }

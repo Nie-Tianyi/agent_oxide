@@ -1,6 +1,11 @@
 [package]
 name = "memory"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "Conversation memory management — in-memory buffer types"
 

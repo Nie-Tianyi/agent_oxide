@@ -1,6 +1,11 @@
 [package]
 name = "tools"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "Tool abstraction — Tool trait, ToolRegistry, and JSON Schema generation"
 

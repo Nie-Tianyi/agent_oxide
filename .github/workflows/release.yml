@@ -1,0 +1,55 @@
+name: Release
+
+# Triggered by a version tag like `v0.5.0`. The tag must match the crate
+# versions in Cargo.toml (`[workspace.package].version`).
+#
+# Procedure:
+#   1. bump `version` in `[workspace.package]` (+ any `[Unreleased]` →
+#      released section in CHANGELOG.md), commit.
+#   2. `git tag v0.5.0 && git push origin v0.5.0`
+#   3. This workflow publishes all 16 crates in dependency order, then
+#      creates a GitHub Release.
+
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Check tag matches workspace version
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          CARGO_VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [ "$TAG_VERSION" != "$CARGO_VERSION" ]; then
+            echo "error: tag v$TAG_VERSION does not match workspace version $CARGO_VERSION" >&2
+            exit 1
+          fi
+
+      - name: Publish crates (dependency order)
+        run: |
+          set -e
+          for crate in \
+            provider util tools-macros memory tools deepseek engine skills \
+            hooks observability persistence sandbox subagent \
+            agent-macros agent-kit agent_oxide
+          do
+            echo "── publishing $crate"
+            cargo publish -p "$crate"
+          done
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true

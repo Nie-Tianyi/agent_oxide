@@ -19,11 +19,53 @@ pub fn iso8601_now() -> String {
         .expect("compile-time-validated format")
 }
 
+/// Returns the largest `char`-boundary index of `s` that is `<= max`.
+///
+/// Equivalent to [`str::floor_char_boundary`], which is only stable since
+/// Rust 1.91 — this implementation keeps the workspace MSRV at 1.85.
+/// Panics if `max > s.len()`.
+pub fn floor_char_boundary(s: &str, max: usize) -> usize {
+    assert!(
+        max <= s.len(),
+        "index {max} out of bounds for len {}",
+        s.len()
+    );
+    let mut boundary = max;
+    while !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    boundary
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_floor_char_boundary_ascii_and_utf8() {
+        let s = "hello";
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(floor_char_boundary(s, 0), 0);
+        assert_eq!(floor_char_boundary(s, s.len()), s.len());
+
+        // "你好" = 6 bytes (3 per char): indices 0, 3, 6 are boundaries,
+        // 1–2 and 4–5 fall mid-character.
+        let s = "你好world";
+        assert_eq!(floor_char_boundary(s, 1), 0);
+        assert_eq!(floor_char_boundary(s, 2), 0);
+        assert_eq!(floor_char_boundary(s, 3), 3);
+        assert_eq!(floor_char_boundary(s, 4), 3);
+        assert_eq!(floor_char_boundary(s, 5), 3);
+        assert_eq!(floor_char_boundary(s, 6), 6); // 'w' starts at 6
+    }
+
+    #[test]
+    fn test_floor_char_boundary_max_eq_len() {
+        let s = "abc你";
+        assert_eq!(floor_char_boundary(s, s.len()), s.len());
+    }
 
     #[test]
     fn test_iso8601_now_produces_correct_format() {

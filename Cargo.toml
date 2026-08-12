@@ -3,10 +3,19 @@ name = "agent_oxide"
 version = "0.5.0"
 edition = "2024"
 description = "Agent Oxide — a modular agent framework for Rust (ReAct engine, LLM providers, tools, sandbox, persistence, skills)"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/agent-oxide/agent_oxide"
-keywords = ["agent", "llm", "react", "framework", "ai"]
-categories = ["asynchronous", "development-tools"]
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
+
+[dev-dependencies]
+criterion = "0.5"
+serde_json = { workspace = true }
+
+[[bench]]
+name = "bench"
+harness = false
 
 [dependencies]
 # ── Core crates ──────────────────────────────────────────────────────────
@@ -34,6 +43,11 @@ resolver = "2"
 [workspace.package]
 version = "0.5.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Nie-Tianyi/agent_oxide"
+keywords = ["agent", "llm", "react", "framework", "ai"]
+categories = ["asynchronous", "development-tools"]
+rust-version = "1.85"
 
 [workspace.dependencies]
 reqwest = { version = "0.13.4", features = ["json", "stream"] }

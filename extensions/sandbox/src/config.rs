@@ -128,15 +128,15 @@ impl SandboxConfig {
     /// defaults.
     fn try_write_default(config_path: &std::path::Path, config: &Self) {
         // Ensure the parent directory exists.
-        if let Some(parent) = config_path.parent()
-            && let Err(e) = std::fs::create_dir_all(parent)
-        {
-            tracing::warn!(
-                dir = %parent.display(),
-                error = %e,
-                "Cannot create config directory; config template not written",
-            );
-            return;
+        if let Some(parent) = config_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                tracing::warn!(
+                    dir = %parent.display(),
+                    error = %e,
+                    "Cannot create config directory; config template not written",
+                );
+                return;
+            }
         }
 
         // Serialise with pretty formatting so the file is human-editable.
@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn test_read_only_paths_round_trip() {
-        let mut cfg = FilesystemConfig::default();
-        cfg.read_only_paths = vec!["C:/some/read/root".into()];
+        let cfg = FilesystemConfig {
+            read_only_paths: vec!["C:/some/read/root".into()],
+            ..Default::default()
+        };
         let s = toml::to_string(&cfg).unwrap();
         assert!(s.contains("read_only_paths"), "got: {s}");
         let back: FilesystemConfig = toml::from_str(&s).unwrap();

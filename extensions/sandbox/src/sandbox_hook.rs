@@ -268,7 +268,7 @@ impl AgentHook for SandboxHook {
                 command: tool_call.function.arguments.clone(),
                 verdict: "allowed".into(),
                 outcome: if observation.len() > 100 {
-                    let boundary = observation.floor_char_boundary(100);
+                    let boundary = util::floor_char_boundary(observation, 100);
                     format!("{}...", &observation[..boundary])
                 } else {
                     observation.to_string()
@@ -304,7 +304,7 @@ impl AgentHook for SandboxHook {
             command: tool_call.function.arguments.clone(),
             verdict: "tool_failed".into(),
             outcome: if error.len() > 100 {
-                let boundary = error.floor_char_boundary(100);
+                let boundary = util::floor_char_boundary(error, 100);
                 format!("{}...", &error[..boundary])
             } else {
                 error.to_string()

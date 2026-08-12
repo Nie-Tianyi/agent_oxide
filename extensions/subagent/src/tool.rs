@@ -345,19 +345,19 @@ fn build_subagent_memory(config: &SubagentConfig, parent_memory: &SharedMemory) 
 
     // Optional context inheritance — copy the last N non-System messages
     // from the parent's conversation.
-    if let Some(n) = config.inherit_context_messages
-        && n > 0
-    {
-        let parent = parent_memory.read().expect("parent memory lock");
-        // Collect all non-System messages, then take the last `n`.
-        let all_non_system: Vec<&Message> = parent
-            .messages()
-            .iter()
-            .filter(|m| m.role != Role::System)
-            .collect();
-        let start = all_non_system.len().saturating_sub(n);
-        for msg in &all_non_system[start..] {
-            memory.push((*msg).clone());
+    if let Some(n) = config.inherit_context_messages {
+        if n > 0 {
+            let parent = parent_memory.read().expect("parent memory lock");
+            // Collect all non-System messages, then take the last `n`.
+            let all_non_system: Vec<&Message> = parent
+                .messages()
+                .iter()
+                .filter(|m| m.role != Role::System)
+                .collect();
+            let start = all_non_system.len().saturating_sub(n);
+            for msg in &all_non_system[start..] {
+                memory.push((*msg).clone());
+            }
         }
     }
 
@@ -388,7 +388,7 @@ fn forward_event_to_progress(event: engine::AgentEvent, tx: &mpsc::UnboundedSend
             name, arguments, ..
         } => {
             let args_summary = if arguments.len() > TRUNCATE_ARGS_CHARS {
-                let boundary = arguments.floor_char_boundary(TRUNCATE_ARGS_CHARS);
+                let boundary = util::floor_char_boundary(&arguments, TRUNCATE_ARGS_CHARS);
                 format!("{}…", &arguments[..boundary])
             } else {
                 arguments
@@ -421,7 +421,7 @@ fn summarize_output(output: &str) -> String {
     let first_line = output.lines().next().unwrap_or("");
     let trimmed = first_line.trim();
     if trimmed.len() > OUTPUT_SUMMARY_CHARS {
-        let boundary = trimmed.floor_char_boundary(OUTPUT_SUMMARY_CHARS);
+        let boundary = util::floor_char_boundary(trimmed, OUTPUT_SUMMARY_CHARS);
         format!("{}…", &trimmed[..boundary])
     } else if trimmed.is_empty() {
         "(empty output)".into()

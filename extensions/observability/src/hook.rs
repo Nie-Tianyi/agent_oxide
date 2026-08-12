@@ -97,7 +97,7 @@ impl AgentHook for ObservabilityHook {
         // Truncate user input to 200 chars for storage efficiency,
         // using floor_char_boundary to avoid splitting multi-byte UTF-8 chars.
         let truncated = if user_input.len() > 200 {
-            let boundary = user_input.floor_char_boundary(200);
+            let boundary = util::floor_char_boundary(user_input, 200);
             let mut s = user_input[..boundary].to_string();
             s.push('…');
             s

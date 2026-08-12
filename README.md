@@ -1,5 +1,10 @@
 # Agent Oxide
 
+[![crates.io](https://img.shields.io/crates/v/agent_oxide.svg)](https://crates.io/crates/agent_oxide)
+[![docs.rs](https://docs.rs/agent_oxide/badge.svg)](https://docs.rs/agent_oxide)
+[![CI](https://github.com/Nie-Tianyi/agent_oxide/actions/workflows/ci.yml/badge.svg)](https://github.com/Nie-Tianyi/agent_oxide/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 A modular agent framework for Rust — a ReAct loop engine, an LLM provider
 abstraction, a tool system, and a rich set of extensions (sandbox,
 persistence, skills, observability, subagents).

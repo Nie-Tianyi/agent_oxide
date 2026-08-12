@@ -1,6 +1,11 @@
 [package]
 name = "deepseek"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "DeepSeek API client — implements provider::LLMClient"
 

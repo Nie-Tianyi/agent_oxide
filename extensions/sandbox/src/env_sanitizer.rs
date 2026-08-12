@@ -205,8 +205,10 @@ mod tests {
         // and we can't control the CI/test environment, we do a
         // structural test instead.
         //
-        // Verify the function was called successfully.
-        assert!(vars.len() > 0 || vars.is_empty()); // tautology - function doesn't panic
+        // Verify the function was called successfully — the call above is
+        // the assertion (it would panic on error). Check the result is a
+        // well-formed map: env values can never contain NUL bytes.
+        assert!(vars.values().all(|v| !v.contains('\0')));
     }
 
     #[test]

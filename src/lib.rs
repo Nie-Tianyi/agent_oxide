@@ -54,10 +54,9 @@
 /// LLM provider abstraction — `LLMClient` trait and shared types.
 pub use provider;
 pub use provider::{
-    Choice, ChoiceMessage, ChunkChoice, CompletionRequest, CompletionResponse, Delta,
-    FinishReason, FunctionDef, LLMClient, Message, ProviderError, ReasoningEffort, Role,
-    StreamChunk, ToolCall, ToolCallFunction, ToolCallKind, ToolChoice, ToolChoiceFunction,
-    ToolDef, ToolDefKind, Usage,
+    Choice, ChoiceMessage, ChunkChoice, CompletionRequest, CompletionResponse, Delta, FinishReason,
+    FunctionDef, LLMClient, Message, ProviderError, ReasoningEffort, Role, StreamChunk, ToolCall,
+    ToolCallFunction, ToolCallKind, ToolChoice, ToolChoiceFunction, ToolDef, ToolDefKind, Usage,
 };
 
 /// DeepSeek API client — implements `provider::LLMClient`.
@@ -79,8 +78,8 @@ pub use tools_macros::tool;
 pub use engine;
 pub use engine::{
     Agent, AgentBuilder, AgentError, AgentEvent, AgentHook, CallOrigin, EngineContext,
-    EngineContextBuilder, InterventionRequest, InterventionResponse, ResponseRouter,
-    RunOutcome, block_on, next_request_id,
+    EngineContextBuilder, InterventionRequest, InterventionResponse, ResponseRouter, RunOutcome,
+    block_on, next_request_id,
 };
 
 /// Shared workspace utilities.

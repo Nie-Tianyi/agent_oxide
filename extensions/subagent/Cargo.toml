@@ -1,6 +1,11 @@
 [package]
 name = "subagent"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "Subagent as Tool — spawn autonomous sub-agents for complex sub-tasks"
 
@@ -10,6 +15,7 @@ tools = { version = "0.5.0", path = "../../core/tools" }
 engine = { version = "0.5.0", path = "../../core/engine" }
 memory = { version = "0.5.0", path = "../../core/memory" }
 observability = { version = "0.5.0", path = "../observability" }
+util = { version = "0.5.0", path = "../../core/util" }
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

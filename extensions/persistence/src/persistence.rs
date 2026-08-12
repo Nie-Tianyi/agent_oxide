@@ -224,7 +224,7 @@ const RESERVED_DOS_NAMES: &[&str] = &[
 /// This function is idempotent: applying it to its own output is a no-op.
 pub fn sanitize_filename(name: &str) -> String {
     // 1. Truncate to MAX_THREAD_NAME_CHARS at a char boundary.
-    let end = name.floor_char_boundary(MAX_THREAD_NAME_CHARS.min(name.len()));
+    let end = util::floor_char_boundary(name, MAX_THREAD_NAME_CHARS.min(name.len()));
     let snippet = &name[..end];
 
     // 2. Map characters: keep Unicode, replace illegal chars, strip control chars.
@@ -296,7 +296,7 @@ pub fn thread_name_from_message(first_message: &str) -> String {
     let date = &util::iso8601_now()[..10];
     // "_" + "YYYY-MM-DD" = 11 chars.  Keep the total under MAX_THREAD_NAME_CHARS.
     let max_base = MAX_THREAD_NAME_CHARS.saturating_sub(11);
-    let end = base.floor_char_boundary(max_base.min(base.len()));
+    let end = util::floor_char_boundary(&base, max_base.min(base.len()));
     let base = &base[..end];
     format!("{base}_{date}")
 }

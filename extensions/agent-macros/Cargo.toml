@@ -1,6 +1,11 @@
 [package]
 name = "agent-macros"
 version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords.workspace = true
+categories.workspace = true
+rust-version.workspace = true
 edition = "2024"
 description = "NVIDIA OO Agents-style proc macros — #[derive(Agent)] and #[agent_impl]"
 

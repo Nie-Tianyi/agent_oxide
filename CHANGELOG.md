@@ -51,11 +51,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **16 crates → 2** — the workspace is now a single `agent_oxide` crate
-  (all modules under `src/`) plus one proc-macro companion
-  `agent-oxide-macros` (`#[derive(Agent)]`, `#[agent_impl]`, `#[tool]`).
-  The old `core/` and `extensions/` sub-crates were merged; every public
-  type is reachable under `agent_oxide::…` with no behavior change. The
-  internal `use provider::…`-style imports became `crate::…` module paths.
+  plus one proc-macro companion `agent-oxide-macros` (`#[derive(Agent)]`,
+  `#[agent_impl]`, `#[tool]`). The old `core/` and `extensions/` sub-crates
+  were merged; every public type is reachable under `agent_oxide::…` with
+  no behavior change. The internal `use provider::…`-style imports became
+  `crate::…` module paths.
+- **Internal layout** — the modules are organized under `src/core/` (engine
+  layer: provider, deepseek, tools, memory, util, engine) and
+  `src/extensions/` (hooks, persistence, observability, sandbox, skills,
+  subagent, agent_kit). `src/lib.rs` re-exports every module at the crate
+  root, so the public API remains flat — `core/`/`extensions/` is purely
+  an internal organization.
 - **Macro-generated paths** — `#[tool]` output references
   `::agent_oxide::tools::…` / `::agent_oxide::serde_json::…`, and
   `#[derive(Agent)]` / `#[agent_impl]` reference `agent_oxide::agent_kit::…`

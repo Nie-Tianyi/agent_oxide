@@ -34,6 +34,10 @@
 //!
 //! # Module layout
 //!
+//! The source is organized as [`core`] (engine layer) and [`extensions`]
+//! (optional capabilities); every module is re-exported at the crate root,
+//! so the public API is flat — `agent_oxide::provider`, `agent_oxide::sandbox`, …
+//!
 //! | Module | Role |
 //! |--------|------|
 //! | [`provider`] | `LLMClient` trait and shared types (`Message`, `ToolCall`, …) |
@@ -52,10 +56,12 @@
 
 #![deny(unsafe_code)]
 
-// ── Core modules ──────────────────────────────────────────────────────────────
+// ── Core modules (engine layer, src/core/) ─────────────────────────────────────
+
+pub mod core;
 
 /// LLM provider abstraction — `LLMClient` trait and shared types.
-pub mod provider;
+pub use core::provider;
 pub use provider::{
     Choice, ChoiceMessage, ChunkChoice, CompletionRequest, CompletionResponse, Delta, FinishReason,
     FunctionDef, LLMClient, Message, ProviderError, ReasoningEffort, Role, StreamChunk, ToolCall,
@@ -63,19 +69,19 @@ pub use provider::{
 };
 
 /// DeepSeek API client — implements `provider::LLMClient`.
-pub mod deepseek;
+pub use core::deepseek;
 pub use deepseek::{DeepSeekClient, DeepSeekError, DeepSeekRequest, DeepSeekStream};
 
 /// Conversation memory management.
-pub mod memory;
+pub use core::memory;
 pub use memory::{Memory, PendingHints, SharedMemory};
 
 /// Tool abstraction — `Tool` trait, `ToolRegistry`, and JSON Schema generation.
-pub mod tools;
+pub use core::tools;
 pub use tools::{Progress, ProgressStream, Tool, ToolError, ToolRegistry, tool_to_def};
 
 /// Agent engine — ReAct loop, `AgentHook` lifecycle, `AgentEvent` streaming.
-pub mod engine;
+pub use core::engine;
 pub use engine::{
     Agent, AgentBuilder, AgentError, AgentEvent, AgentHook, CallOrigin, EngineContext,
     EngineContextBuilder, InterventionRequest, InterventionResponse, ResponseRouter, RunOutcome,
@@ -83,27 +89,29 @@ pub use engine::{
 };
 
 /// Shared workspace utilities.
-pub mod util;
+pub use core::util;
 pub use util::iso8601_now;
 
-// ── Extension modules ─────────────────────────────────────────────────────────
+// ── Extension modules (src/extensions/) ────────────────────────────────────────
 
-/// NVIDIA OO Agents-style ergonomics on top of the core API.
-pub mod agent_kit;
+pub mod extensions;
+
 pub use agent_kit::{AgentAssembler, AgentBlueprint, BuildConfig, ContextBlock, ContextBlockHook};
+/// NVIDIA OO Agents-style ergonomics on top of the core API.
+pub use extensions::agent_kit;
 
 /// Common hooks — compaction, approval, etc.
-pub mod hooks;
+pub use extensions::hooks;
 /// Full-chain tracing — `TraceEvent`, `TraceStore`, `RunMetrics`.
-pub mod observability;
+pub use extensions::observability;
 /// Conversation persistence — save/load threads.
-pub mod persistence;
+pub use extensions::persistence;
 /// 5-layer security sandbox — `WorkspaceFs`, `ShellFilter`, `SandboxHook`, …
-pub mod sandbox;
+pub use extensions::sandbox;
 /// Skill definitions, discovery, and registry.
-pub mod skills;
+pub use extensions::skills;
 /// Subagent as Tool — spawn autonomous sub-agents.
-pub mod subagent;
+pub use extensions::subagent;
 
 // ── Proc macros and their support crates ──────────────────────────────────────
 

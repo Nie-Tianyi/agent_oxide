@@ -12,7 +12,7 @@ This document describes the complete security-check chain that an LLM tool call 
 
 ## Step 0: Agent Loop Dispatch
 
-Code: [`src/engine/agent.rs`](../src/engine/agent.rs#L217-L269)
+Code: [`src/core/engine/agent.rs`](../src/core/engine/agent.rs#L217-L269)
 ![Agent Loop permission-check flow](./assets/sandbox.png)
 
 The only hook currently registered is `SandboxHook`.
@@ -21,7 +21,7 @@ The only hook currently registered is `SandboxHook`.
 
 ## Step 1: SandboxHook::before_tool_call()
 
-Code: [`src/sandbox/sandbox_hook.rs`](../src/sandbox/sandbox_hook.rs)
+Code: [`src/extensions/sandbox/sandbox_hook.rs`](../src/extensions/sandbox/sandbox_hook.rs)
 
 ![before_tool_call tool-call permission check](./assets/pre-hook.png)
 
@@ -36,7 +36,7 @@ Classification priority (top to bottom, first match wins):
 4. Fallthrough        →  nothing above matched   → RequiresApproval
 ```
 
-Code: [`src/sandbox/shell_filter.rs`](../src/sandbox/shell_filter.rs#L77-L117)
+Code: [`src/extensions/sandbox/shell_filter.rs`](../src/extensions/sandbox/shell_filter.rs#L77-L117)
 
 ---
 
@@ -48,7 +48,7 @@ All file tools share an `Arc<WorkspaceFs>` and go through the following checks d
 
 ![File tool permission checks](./assets/toolcall.png)
 
-Code: [`src/sandbox/fs.rs`](../src/sandbox/fs.rs)
+Code: [`src/extensions/sandbox/fs.rs`](../src/extensions/sandbox/fs.rs)
 
 ### Shell tool (shell)
 
@@ -56,8 +56,8 @@ Code: [`src/sandbox/fs.rs`](../src/sandbox/fs.rs)
 
 Code:
 
-- ShellTool: [`src/sandbox/shell_filter.rs`](../src/sandbox/shell_filter.rs) (the tool itself lives in the reference app: `bins/loomis/src/tools/shell.rs`)
-- EnvSanitizer: [`src/sandbox/env_sanitizer.rs`](../src/sandbox/env_sanitizer.rs)
+- ShellTool: [`src/extensions/sandbox/shell_filter.rs`](../src/extensions/sandbox/shell_filter.rs) (the shell tool itself is not part of this crate; the TUI app implements it on top of ShellFilter)
+- EnvSanitizer: [`src/extensions/sandbox/env_sanitizer.rs`](../src/extensions/sandbox/env_sanitizer.rs)
 
 ---
 
@@ -67,8 +67,8 @@ Code:
 
 Code:
 
-- ResourceTracker: [`src/sandbox/resource_tracker.rs`](../src/sandbox/resource_tracker.rs)
-- AuditLogger: [`src/sandbox/audit_logger.rs`](../src/sandbox/audit_logger.rs)
+- ResourceTracker: [`src/extensions/sandbox/resource_tracker.rs`](../src/extensions/sandbox/resource_tracker.rs)
+- AuditLogger: [`src/extensions/sandbox/audit_logger.rs`](../src/extensions/sandbox/audit_logger.rs)
 
 ---
 

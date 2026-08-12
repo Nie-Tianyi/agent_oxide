@@ -211,20 +211,22 @@ agent_oxide/
 ├── Cargo.toml              # [package] agent_oxide + [workspace]
 ├── agent_oxide-macros/     # proc macros: #[derive(Agent)], #[agent_impl], #[tool]
 ├── src/
-│   ├── lib.rs              # module tree + prelude
-│   ├── provider/           # LLMClient trait + shared types
-│   ├── deepseek/           # DeepSeekClient — implements LLMClient
-│   ├── tools/              # Tool trait, ToolRegistry, ProgressStream
-│   ├── memory/             # Memory buffer, PendingHints
-│   ├── util/               # Shared utilities (iso8601_now)
-│   ├── engine/             # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
-│   ├── skills/             # SkillDef, SkillRegistry — skill discovery & loading
-│   ├── hooks/              # MicroCompactHook + MacroCompactHook
-│   ├── persistence/        # Conversation persistence — save/load threads, PersistenceHook
-│   ├── subagent/           # SubagentTool — spawn child agents as tools
-│   ├── observability/      # TraceEvent, TraceStore, RunMetrics — full-chain tracing
-│   ├── sandbox/            # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, etc.
-│   └── agent_kit/          # NOOA — NVIDIA OO Agents-style ergonomics
+│   ├── lib.rs              # module tree + prelude; re-exports core/* and extensions/*
+│   ├── core/               # engine layer (layer 3 of the four-layer architecture)
+│   │   ├── provider/       # LLMClient trait + shared types
+│   │   ├── deepseek/       # DeepSeekClient — implements LLMClient
+│   │   ├── tools/          # Tool trait, ToolRegistry, ProgressStream
+│   │   ├── memory/         # Memory buffer, PendingHints
+│   │   ├── util/           # Shared utilities (iso8601_now)
+│   │   └── engine/         # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
+│   └── extensions/         # optional capabilities layered on the engine
+│       ├── skills/         # SkillDef, SkillRegistry — skill discovery & loading
+│       ├── hooks/          # MicroCompactHook + MacroCompactHook
+│       ├── persistence/    # Conversation persistence — save/load threads, PersistenceHook
+│       ├── subagent/       # SubagentTool — spawn child agents as tools
+│       ├── observability/  # TraceEvent, TraceStore, RunMetrics — full-chain tracing
+│       ├── sandbox/        # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, etc.
+│       └── agent_kit/      # NOOA — NVIDIA OO Agents-style ergonomics
 ├── examples/               # NOOA examples: feedback / inventory / note-taking agents
 └── docs/
     ├── beginner-developer-guide.md
@@ -232,6 +234,11 @@ agent_oxide/
     ├── sandbox-architecture.md
     └── agent-kit-guide.md
 ```
+
+> The public API is flat: every module in `src/core/` and `src/extensions/`
+> is re-exported at the crate root, so users write `agent_oxide::provider`,
+> `agent_oxide::sandbox`, etc. — the `core/`/`extensions/` split is purely
+> an internal organization.
 
 ### Module dependency graph
 
@@ -349,7 +356,7 @@ user-invoked tool calls.
    for summarisation via `engine::block_on`, inserts summary as System
    message.
 
-Key constants in `src/hooks/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
+Key constants in `src/extensions/hooks/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
 `DEFAULT_COMPACT_CHAR_LIMIT`, `DEFAULT_KEEP_LAST_N`, `DEFAULT_KEEP_RECENT_TOOL_OUTPUTS`.
 
 #### Sandbox (defense in depth)
@@ -375,7 +382,7 @@ lock-free `RunMetrics` atomics. Trace events flow via the `tracing` crate.
 
 #### Skills system
 
-`SkillRegistry` (src/skills) discovers and parses `.md` skill files
+`SkillRegistry` (src/extensions/skills) discovers and parses `.md` skill files
 (YAML frontmatter + body) from user-configured skill directories. The
 registry is provider-agnostic; consuming applications wire it to their own
 `SkillTool` / `SkillHook`.

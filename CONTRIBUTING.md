@@ -54,9 +54,13 @@ core** (memory, tools, agent loop, hooks) and the **LLM client** layer
 (`LLMClient` trait). The **UI** and **Harness** layers are user-owned, built
 on top of these APIs.
 
-- `src/` — one module per subsystem: provider, deepseek, tools, memory,
-  util, engine, skills, hooks, persistence, subagent, observability,
-  sandbox, agent_kit
+- `src/core/` — the engine layer: provider, deepseek, tools, memory, util,
+  engine (one module per subsystem)
+- `src/extensions/` — optional capabilities: skills, hooks, persistence,
+  subagent, observability, sandbox, agent_kit
+- `src/lib.rs` — declares `core`/`extensions` and re-exports every module at
+  the crate root, so the public API stays flat (`agent_oxide::provider`,
+  `agent_oxide::sandbox`, …) — keep that invariant when adding modules
 - `agent_oxide-macros/` — the proc-macro crate (`#[derive(Agent)]`,
   `#[agent_impl]`, `#[tool]`)
 - `docs/` — guides (beginner, senior, sandbox, agent-kit, nooa, harness-ui)

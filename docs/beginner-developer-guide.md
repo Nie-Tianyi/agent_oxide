@@ -864,13 +864,13 @@ in depth:
 
 | What | Where | Why |
 |---|---|---|
-| Real tool implementations | loomis app: `bins/loomis/src/tools/` | See production-quality tools |
-| Sandbox system | `src/sandbox/` | Full sandbox defense in depth |
-| TUI implementation | loomis app: `bins/loomis/src/tui/` | ratatui-based terminal UI |
-| Agent assembly | loomis app: `bins/loomis/src/app.rs` | How the reference app wires everything |
-| Compaction hooks | `src/hooks/` | MicroCompact and MacroCompact |
-| DeepSeek client | `src/deepseek/` | SSE streaming implementation |
-| Engine core | `src/engine/agent.rs` | The ReAct loop in full detail |
+| Real tool implementations | `src/core/tools/registry.rs` | Production-style tools | See production-quality tools |
+| Sandbox system | `src/extensions/sandbox/` | Full sandbox defense in depth |
+| TUI implementation | [`harness-ui-guide.md`](harness-ui-guide.md) | How to render events as a terminal UI | ratatui-based terminal UI |
+| Agent assembly | `src/extensions/agent_kit/builder.rs` | How AgentAssembler wires hooks | How the reference app wires everything |
+| Compaction hooks | `src/extensions/hooks/` | MicroCompact and MacroCompact |
+| DeepSeek client | `src/core/deepseek/` | SSE streaming implementation |
+| Engine core | `src/core/engine/agent.rs` | The ReAct loop in full detail |
 
 ### Ideas for Your Next Project
 

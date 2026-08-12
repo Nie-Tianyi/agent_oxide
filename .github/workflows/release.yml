@@ -41,8 +41,8 @@ jobs:
       - name: Publish crates (proc-macro first, then umbrella)
         run: |
           set -e
-          echo "── publishing agent_oxide-macros"
-          cargo publish -p agent_oxide-macros
+          echo "── publishing agent-oxide-macros"
+          cargo publish -p agent-oxide-macros
           echo "── publishing agent_oxide"
           cargo publish -p agent_oxide
 

@@ -44,13 +44,18 @@ impl ResponseRouter {
     /// Register a sender for the given `request_id`.
     ///
     /// Panics if a sender is already registered under this id (each
-    /// `request_id` must be unique within a session).
+    /// `request_id` must be unique within a session).  On a poisoned
+    /// lock the registration is skipped — the requester's own timeout
+    /// then unwinds the intervention instead of panicking.
     pub fn register(
         &self,
         request_id: String,
         tx: std::sync::mpsc::SyncSender<InterventionResponse>,
     ) {
-        let mut senders = self.senders.lock().expect("lock poisoned");
+        let Ok(mut senders) = self.senders.lock() else {
+            tracing::error!("response router lock poisoned — intervention routing disabled");
+            return;
+        };
         let prev = senders.insert(request_id, tx);
         assert!(prev.is_none(), "duplicate request_id in ResponseRouter");
     }
@@ -58,23 +63,31 @@ impl ResponseRouter {
     /// Remove the sender for `request_id` without delivering a response.
     ///
     /// Called by the requester on timeout or cancellation.  No-op if no
-    /// sender is registered (e.g. the TUI already routed the response).
+    /// sender is registered (e.g. the TUI already routed the response),
+    /// or if the router lock is poisoned.
     pub fn unregister(&self, request_id: &str) {
-        let mut senders = self.senders.lock().expect("lock poisoned");
+        let Ok(mut senders) = self.senders.lock() else {
+            tracing::error!("response router lock poisoned — intervention routing disabled");
+            return;
+        };
         senders.remove(request_id);
     }
 
     /// Route a response to the requester identified by `request_id`.
     ///
     /// Returns `true` if the response was successfully delivered, `false`
-    /// if no sender was registered or the receiver has been dropped.
+    /// if no sender was registered, the receiver has been dropped, or
+    /// the router lock is poisoned.
     ///
     /// The sender is removed from the map **under the lock**, then
     /// `send()` is called **outside the lock** — this prevents deadlock
     /// when the receiver is a rendezvous channel (capacity 0).
     pub fn route(&self, request_id: &str, response: InterventionResponse) -> bool {
         let sender = {
-            let mut senders = self.senders.lock().expect("lock poisoned");
+            let Ok(mut senders) = self.senders.lock() else {
+                tracing::error!("response router lock poisoned — intervention routing disabled");
+                return false;
+            };
             senders.remove(request_id)
         };
 

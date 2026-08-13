@@ -133,27 +133,36 @@ impl AgentHook for ObservabilityHook {
             crate::engine::RunOutcome::Cancelled => "cancelled".to_string(),
         };
 
-        let cumulative_usage = {
-            let usage = self.memory.read().expect("memory lock poisoned");
-            let history = &usage.usage_history;
-            if history.is_empty() {
-                usage.last_usage.clone().unwrap_or(crate::provider::Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                })
-            } else {
-                let mut total = crate::provider::Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    total_tokens: 0,
-                };
-                for u in history {
-                    total.prompt_tokens += u.prompt_tokens;
-                    total.completion_tokens += u.completion_tokens;
-                    total.total_tokens += u.total_tokens;
+        let cumulative_usage = match self.memory.read() {
+            Ok(usage) => {
+                let history = &usage.usage_history;
+                if history.is_empty() {
+                    usage.last_usage.clone().unwrap_or(crate::provider::Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                    })
+                } else {
+                    let mut total = crate::provider::Usage {
+                        prompt_tokens: 0,
+                        completion_tokens: 0,
+                        total_tokens: 0,
+                    };
+                    for u in history {
+                        total.prompt_tokens += u.prompt_tokens;
+                        total.completion_tokens += u.completion_tokens;
+                        total.total_tokens += u.total_tokens;
+                    }
+                    total
                 }
-                total
+            }
+            Err(_) => {
+                tracing::error!("memory lock poisoned — reporting zero cumulative usage");
+                crate::provider::Usage {
+                    prompt_tokens: 0,
+                    completion_tokens: 0,
+                    total_tokens: 0,
+                }
             }
         };
 
@@ -211,9 +220,8 @@ impl AgentHook for ObservabilityHook {
         let usage = self
             .memory
             .read()
-            .expect("memory lock poisoned")
-            .last_usage
-            .clone()
+            .ok()
+            .and_then(|mem| mem.last_usage.clone())
             .unwrap_or(crate::provider::Usage {
                 prompt_tokens: 0,
                 completion_tokens: 0,

@@ -224,8 +224,16 @@ impl<C: LLMClient> AgentBuilder<C> {
 
         // Step 2: seed system prompt
         if let Some(ref prompt) = self.system_prompt {
-            let mut mem = memory.write().expect("memory lock poisoned");
-            mem.push(Message::new(Role::System, prompt.clone()));
+            match memory.write() {
+                Ok(mut mem) => mem.push(Message::new(Role::System, prompt.clone())),
+                // A poisoned lock here means the caller passed in an
+                // already-poisoned memory — fail loudly in the log rather
+                // than panicking; every run() will surface the same
+                // condition as AgentError::Memory.
+                Err(_) => {
+                    tracing::error!("memory lock poisoned at build time — system prompt not seeded")
+                }
+            }
         }
 
         // Step 3: build tool registry

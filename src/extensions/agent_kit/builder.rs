@@ -135,7 +135,12 @@ impl<C: LLMClient + 'static> AgentAssembler<C> {
         let memory = self.config.memory.unwrap_or_else(|| {
             let mem: SharedMemory = Arc::new(std::sync::RwLock::new(Memory::new()));
             if let Some(prompt) = &self.system_prompt {
-                let mut w = mem.write().expect("memory lock poisoned");
+                // This lock was created two lines above — it cannot be
+                // poisoned, so expect() is an invariant check, not a
+                // runtime panic path.
+                let mut w = mem
+                    .write()
+                    .expect("freshly created memory lock cannot be poisoned");
                 w.push(Message::new(Role::System, prompt.clone()));
             }
             mem

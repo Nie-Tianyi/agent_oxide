@@ -3,11 +3,11 @@
 //! Drives autonomous tool-using conversations with an LLM provider.
 
 use std::collections::{BTreeMap, HashSet};
-use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::memory::SharedMemory;
@@ -23,39 +23,41 @@ use super::hooks::AgentHook;
 
 // ── AgentError ────────────────────────────────────────────────────────────────
 
-#[derive(Debug)]
+/// Errors produced during an agent run.
+///
+/// Source chains are preserved (`Provider(#[source] ProviderError)` →
+/// `ProviderError::Http(#[source] …)` → `reqwest::Error`), so callers can
+/// trace to the root cause via [`std::error::Error::source`].
+#[derive(Debug, Error)]
 pub enum AgentError {
-    Provider(ProviderError),
-    Tool { name: String, error: ToolError },
+    /// The LLM provider call failed.
+    #[error("provider error: {0}")]
+    Provider(#[from] ProviderError),
+    /// A tool returned an error.
+    #[error("tool '{name}' error: {error}")]
+    Tool {
+        name: String,
+        #[source]
+        error: ToolError,
+    },
+    /// The ReAct loop hit the configured step cap.
+    #[error("max steps ({0}) reached")]
     MaxStepsReached(usize),
+    /// The model returned an empty final answer.
+    #[error("model returned empty output")]
     NoOutput,
+    /// The provider response contained no choices.
+    #[error("response has no choices")]
     NoChoices,
+    /// Conversation memory could not be accessed (e.g. lock poisoned).
+    #[error("memory error: {0}")]
     Memory(String),
+    /// A hook rejected a tool call before execution.
+    #[error("tool '{name}' rejected: {reason}")]
     ToolRejected { name: String, reason: String },
+    /// The SSE stream produced no chunk within the timeout window.
+    #[error("stream timed out — no data received from provider")]
     StreamTimeout,
-}
-
-impl fmt::Display for AgentError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Provider(e) => write!(f, "provider error: {e}"),
-            Self::Tool { name, error } => write!(f, "tool '{name}' error: {error}"),
-            Self::MaxStepsReached(n) => write!(f, "max steps ({n}) reached"),
-            Self::NoOutput => write!(f, "model returned empty output"),
-            Self::NoChoices => write!(f, "response has no choices"),
-            Self::Memory(msg) => write!(f, "memory error: {msg}"),
-            Self::ToolRejected { name, reason } => write!(f, "tool '{name}' rejected: {reason}"),
-            Self::StreamTimeout => write!(f, "stream timed out — no data received from provider"),
-        }
-    }
-}
-
-impl std::error::Error for AgentError {}
-
-impl From<ProviderError> for AgentError {
-    fn from(e: ProviderError) -> Self {
-        Self::Provider(e)
-    }
 }
 
 // ── CallOrigin ────────────────────────────────────────────────────────────────
@@ -306,9 +308,35 @@ impl<C: LLMClient> Agent<C> {
 // Extracted from run_streaming_loop and run_non_streaming_loop to eliminate
 // ~500 lines of duplication. These methods are called by both loops.
 
+/// Map a poisoned memory lock to a run-level error instead of panicking
+/// the whole run.
+fn memory_poisoned<T>(_: std::sync::PoisonError<T>) -> AgentError {
+    AgentError::Memory("memory lock poisoned".into())
+}
+
 impl<C: LLMClient> Agent<C> {
+    /// Lock conversation memory for writing, mapping poisoning to
+    /// [`AgentError::Memory`].
+    fn lock_memory(
+        &self,
+    ) -> Result<std::sync::RwLockWriteGuard<'_, crate::memory::Memory>, AgentError> {
+        self.ctx.memory.write().map_err(memory_poisoned)
+    }
+
+    /// Lock conversation memory for reading, mapping poisoning to
+    /// [`AgentError::Memory`].
+    fn lock_memory_read(
+        &self,
+    ) -> Result<std::sync::RwLockReadGuard<'_, crate::memory::Memory>, AgentError> {
+        self.ctx.memory.read().map_err(memory_poisoned)
+    }
+
     /// Begin a run: notify hooks, emit RunStarted, push user message.
-    fn begin_run(&self, user_input: &str, tx: &Option<mpsc::UnboundedSender<AgentEvent>>) {
+    fn begin_run(
+        &self,
+        user_input: &str,
+        tx: &Option<mpsc::UnboundedSender<AgentEvent>>,
+    ) -> Result<(), AgentError> {
         for hook in &self.ctx.hooks {
             hook.on_run_start("default", user_input, &self.ctx.memory);
         }
@@ -318,32 +346,26 @@ impl<C: LLMClient> Agent<C> {
                 user_input: user_input.to_string(),
             });
         }
-        self.ctx
-            .memory
-            .write()
-            .expect("memory lock poisoned")
+        self.lock_memory()?
             .push(Message::new(Role::User, user_input));
         tracing::debug!(
             model = %self.ctx.model,
             input = %user_input.chars().take(200).collect::<String>(),
             "agent run started",
         );
+        Ok(())
     }
 
     /// Run step-level hooks (on_step_start + on_llm_start) and return the
     /// context vector for the LLM call.
-    fn prepare_llm_call(&self, steps: usize) -> Vec<Message> {
+    fn prepare_llm_call(&self, steps: usize) -> Result<Vec<Message>, AgentError> {
         for hook in &self.ctx.hooks {
             hook.on_step_start("default", steps, self.ctx.max_steps);
         }
         for hook in &self.ctx.hooks {
             hook.on_llm_start("default", &self.ctx.memory);
         }
-        self.ctx
-            .memory
-            .read()
-            .expect("memory lock poisoned")
-            .to_context_vec()
+        Ok(self.lock_memory_read()?.to_context_vec())
     }
 
     /// Emit failure events, notify hooks, and return the error.
@@ -417,7 +439,7 @@ impl<C: LLMClient> Agent<C> {
         &self,
         assistant_msg: &Message,
         tx: &Option<mpsc::UnboundedSender<AgentEvent>>,
-    ) {
+    ) -> Result<(), AgentError> {
         // ── Emit ToolCall events before execution ──
         if let Some(tx) = tx
             && let Some(ref tool_calls) = assistant_msg.tool_calls
@@ -434,13 +456,12 @@ impl<C: LLMClient> Agent<C> {
 
         // ── Push assistant message to memory ──
         {
-            let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
-            mem.push(assistant_msg.clone());
+            self.lock_memory()?.push(assistant_msg.clone());
         }
 
         let tool_calls = match assistant_msg.tool_calls.as_ref() {
             Some(tcs) => tcs,
-            None => return,
+            None => return Ok(()),
         };
 
         // ═══════════════════════════════════════════════════════════════
@@ -459,10 +480,7 @@ impl<C: LLMClient> Agent<C> {
                         "tool call blocked by hook",
                     );
                     let rejection_msg = format!("Tool rejected: {e}");
-                    self.ctx
-                        .memory
-                        .write()
-                        .expect("memory lock poisoned")
+                    self.lock_memory()?
                         .push(Message::tool_result(&tc.id, &rejection_msg));
                     if let Some(tx) = tx {
                         let _ = tx.send(AgentEvent::ToolRejected {
@@ -505,10 +523,7 @@ impl<C: LLMClient> Agent<C> {
                     for hook in &self.ctx.hooks {
                         hook.after_tool_call("default", &outcome.tc, output);
                     }
-                    self.ctx
-                        .memory
-                        .write()
-                        .expect("memory lock poisoned")
+                    self.lock_memory()?
                         .push(Message::tool_result(&outcome.tc.id, output));
                     if let Some(tx) = tx {
                         let _ = tx.send(AgentEvent::ToolSuccessful {
@@ -522,10 +537,7 @@ impl<C: LLMClient> Agent<C> {
                     for hook in &self.ctx.hooks {
                         hook.on_tool_failed("default", &outcome.tc, error);
                     }
-                    self.ctx
-                        .memory
-                        .write()
-                        .expect("memory lock poisoned")
+                    self.lock_memory()?
                         .push(Message::tool_result(&outcome.tc.id, error));
                     if let Some(tx) = tx {
                         let _ = tx.send(AgentEvent::ToolFailure {
@@ -540,10 +552,7 @@ impl<C: LLMClient> Agent<C> {
                     for hook in &self.ctx.hooks {
                         hook.on_tool_failed("default", &outcome.tc, &err_msg);
                     }
-                    self.ctx
-                        .memory
-                        .write()
-                        .expect("memory lock poisoned")
+                    self.lock_memory()?
                         .push(Message::tool_result(&outcome.tc.id, &err_msg));
                     if let Some(tx) = tx {
                         let _ = tx.send(AgentEvent::ToolFailure {
@@ -555,6 +564,7 @@ impl<C: LLMClient> Agent<C> {
                 }
             }
         }
+        Ok(())
     }
 }
 
@@ -679,7 +689,9 @@ impl<C: LLMClient> Agent<C> {
         user_input: &str,
         tx: Option<mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<String, AgentError> {
-        self.begin_run(user_input, &tx);
+        if let Err(e) = self.begin_run(user_input, &tx) {
+            return self.fail_run(e, &tx);
+        }
 
         let mut steps = 0;
         loop {
@@ -700,13 +712,16 @@ impl<C: LLMClient> Agent<C> {
             // between an assistant tool_calls message and its tool
             // results violates the provider API contract.
             {
-                let mut pending = self
-                    .ctx
-                    .pending_hints
-                    .lock()
-                    .expect("pending hints lock poisoned");
+                let pending = self.ctx.pending_hints.lock().map_err(memory_poisoned);
+                let mut pending = match pending {
+                    Ok(p) => p,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
                 if !pending.is_empty() {
-                    let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                    let mut mem = match self.lock_memory() {
+                        Ok(m) => m,
+                        Err(e) => return self.fail_run(e, &tx),
+                    };
                     tracing::debug!(hint_count = pending.len(), "draining pending user hints");
                     for msg in pending.drain(..) {
                         mem.push(msg);
@@ -718,7 +733,10 @@ impl<C: LLMClient> Agent<C> {
             //    snapshot the full conversation history from memory.  The
             //    context includes the system prompt, all prior user/assistant
             //    messages, and any tool-call results from previous steps.
-            let messages = self.prepare_llm_call(steps);
+            let messages = match self.prepare_llm_call(steps) {
+                Ok(m) => m,
+                Err(e) => return self.fail_run(e, &tx),
+            };
             let tools = self.ctx.tools.to_tool_defs();
             let request = CompletionRequest::new(&self.ctx.model, messages)
                 .with_stream(true)
@@ -784,7 +802,10 @@ impl<C: LLMClient> Agent<C> {
             // ── Write usage to memory so hooks (e.g. MacroCompact) can
             //    read the exact prompt-token count in the next on_llm_start.
             {
-                let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
                 if let Some(ref u) = last_usage {
                     mem.usage_history.push(u.clone());
                 }
@@ -805,23 +826,25 @@ impl<C: LLMClient> Agent<C> {
             if has_tool_calls {
                 // Tool calls → execute them, push results to memory, loop
                 // again so the LLM can see the tool outputs.
-                self.execute_tool_calls(&assistant_msg, &tx).await;
+                if let Err(e) = self.execute_tool_calls(&assistant_msg, &tx).await {
+                    return self.fail_run(e, &tx);
+                }
             } else if is_truncated {
                 // Truncated → push the partial message to memory and spin
                 // again.  The next LLM call will see its own partial output
                 // in context and continue generation.
-                self.ctx
-                    .memory
-                    .write()
-                    .expect("memory lock poisoned")
-                    .push(assistant_msg);
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
+                mem.push(assistant_msg);
             } else {
                 // Final answer → push to memory and return.
-                self.ctx
-                    .memory
-                    .write()
-                    .expect("memory lock poisoned")
-                    .push(assistant_msg.clone());
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
+                mem.push(assistant_msg.clone());
                 return self.finish_run(assistant_msg.content, &tx);
             }
         }
@@ -832,7 +855,9 @@ impl<C: LLMClient> Agent<C> {
         user_input: &str,
         tx: Option<mpsc::UnboundedSender<AgentEvent>>,
     ) -> Result<String, AgentError> {
-        self.begin_run(user_input, &tx);
+        if let Err(e) = self.begin_run(user_input, &tx) {
+            return self.fail_run(e, &tx);
+        }
 
         let mut steps = 0;
         loop {
@@ -848,13 +873,16 @@ impl<C: LLMClient> Agent<C> {
 
             // ── Drain any user hints queued during tool execution. ──
             {
-                let mut pending = self
-                    .ctx
-                    .pending_hints
-                    .lock()
-                    .expect("pending hints lock poisoned");
+                let pending = self.ctx.pending_hints.lock().map_err(memory_poisoned);
+                let mut pending = match pending {
+                    Ok(p) => p,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
                 if !pending.is_empty() {
-                    let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                    let mut mem = match self.lock_memory() {
+                        Ok(m) => m,
+                        Err(e) => return self.fail_run(e, &tx),
+                    };
                     tracing::debug!(hint_count = pending.len(), "draining pending user hints");
                     for msg in pending.drain(..) {
                         mem.push(msg);
@@ -862,7 +890,10 @@ impl<C: LLMClient> Agent<C> {
                 }
             }
 
-            let messages = self.prepare_llm_call(steps);
+            let messages = match self.prepare_llm_call(steps) {
+                Ok(m) => m,
+                Err(e) => return self.fail_run(e, &tx),
+            };
             let tools = self.ctx.tools.to_tool_defs();
             let request = CompletionRequest::new(&self.ctx.model, messages)
                 .with_stream(false)
@@ -907,7 +938,10 @@ impl<C: LLMClient> Agent<C> {
             // ── Write usage to memory so hooks can read prompt_tokens
             //    in the next on_llm_start invocation.
             {
-                let mut mem = self.ctx.memory.write().expect("memory lock poisoned");
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
                 if let Some(ref u) = last_usage {
                     mem.usage_history.push(u.clone());
                 }
@@ -930,19 +964,21 @@ impl<C: LLMClient> Agent<C> {
 
             if has_tool_calls {
                 // Tool calls: delegate to shared executor.
-                self.execute_tool_calls(&msg, &tx).await;
+                if let Err(e) = self.execute_tool_calls(&msg, &tx).await {
+                    return self.fail_run(e, &tx);
+                }
             } else if is_truncated {
-                self.ctx
-                    .memory
-                    .write()
-                    .expect("memory lock poisoned")
-                    .push(msg);
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
+                mem.push(msg);
             } else {
-                self.ctx
-                    .memory
-                    .write()
-                    .expect("memory lock poisoned")
-                    .push(msg);
+                let mut mem = match self.lock_memory() {
+                    Ok(m) => m,
+                    Err(e) => return self.fail_run(e, &tx),
+                };
+                mem.push(msg);
                 return self.finish_run(content, &tx);
             }
         }
@@ -1452,9 +1488,9 @@ async fn stream_with_retry(
 
 fn is_retryable(err: &ProviderError) -> bool {
     match err {
-        ProviderError::Http { .. } => true,
+        ProviderError::Http(_) => true,
         ProviderError::Api { status, .. } => status >= &500u16,
-        ProviderError::Parse { .. } => false,
+        ProviderError::Parse(_) => false,
         ProviderError::StreamingNotSupported => false,
     }
 }
@@ -1511,9 +1547,7 @@ mod tests {
 
     #[test]
     fn test_is_retryable() {
-        assert!(is_retryable(&ProviderError::Http {
-            message: "timeout".into()
-        }));
+        assert!(is_retryable(&ProviderError::http_message("timeout")));
         assert!(is_retryable(&ProviderError::Api {
             status: 503,
             body: "".into()
@@ -1522,8 +1556,26 @@ mod tests {
             status: 400,
             body: "".into()
         }));
-        assert!(!is_retryable(&ProviderError::Parse {
-            message: "oops".into()
-        }));
+        assert!(!is_retryable(&ProviderError::Parse("oops".into())));
+    }
+
+    #[test]
+    fn test_provider_error_source_chain() {
+        // The source chain must survive the provider → agent boundary:
+        // AgentError::Provider → ProviderError::Http → the transport
+        // error (a boxed io::Error stands in for reqwest::Error here —
+        // reqwest 0.13 does not allow constructing Error values outside
+        // the crate, but the boxing path is identical).
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        let provider_err = ProviderError::Http(Box::new(io));
+        let agent_err = AgentError::from(provider_err);
+
+        let transport = std::error::Error::source(&agent_err)
+            .and_then(std::error::Error::source)
+            .expect("chain: AgentError → ProviderError → transport error");
+        assert!(
+            transport.to_string().contains("refused"),
+            "transport error must survive the chain, got: {transport}"
+        );
     }
 }

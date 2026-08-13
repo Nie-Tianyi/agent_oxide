@@ -383,10 +383,10 @@ impl LLMClient for AnthropicClient {
             .json(&body)
             .send()
             .await
-            .map_err(|e| ProviderError::Http(e.to_string()))?;
+            .map_err(|e| ProviderError::Http(Box::new(e)))?;
 
         if !resp.status().is_success() {
-            return Err(ProviderError::Http(format!(
+            return Err(ProviderError::http_message(format!(
                 "Anthropic API returned {}: {}",
                 resp.status(),
                 resp.text().await.unwrap_or_default()
@@ -396,7 +396,7 @@ impl LLMClient for AnthropicClient {
         let body: serde_json::Value = resp
             .json()
             .await
-            .map_err(|e| ProviderError::Deserialization(e.to_string()))?;
+            .map_err(|e| ProviderError::Parse(e.to_string()))?;
 
         self.convert_response(body)
     }

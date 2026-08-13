@@ -17,6 +17,8 @@ How to upgrade downstream crates from `agent_oxide` 0.5.1 to 0.6.0.
 | Sandbox execution layers ship in-library (`ShellTool` + `ShellRunner`) | No (recommended migration) | [Sandbox execution layers](#sandbox-execution-layers) |
 | Env sanitizer no longer passes `PYTHONPATH` / `NODE_PATH` / `RUSTC_WRAPPER` | Behavioral | [Env sanitizer narrowed](#env-sanitizer-narrowed) |
 | Shell approval policy tightened (chained commands prompt; "Deny with reason…" replaces "Other…") | Behavioral | [Shell approval policy tightened](#shell-approval-policy-tightened) |
+| Error types use `thiserror` and preserve source chains (`ProviderError` variant shapes changed) | Yes (match sites) | [Error types carry source chains](#error-types-carry-source-chains) |
+| Lock poisoning degrades gracefully instead of panicking | Behavioral | [Lock poisoning no longer panics](#lock-poisoning-no-longer-panics) |
 
 ---
 
@@ -233,3 +235,60 @@ input.)
 Downstream TUIs render `InterventionRequest::options` as-is, so no UI
 code change is required — but any UI logic keyed on the literal string
 `"Other…"` must match `"Deny with reason…"` instead.
+
+---
+
+## Error types carry source chains
+
+All framework error types now derive `thiserror` and preserve
+`#[source]` chains. `AgentError::Provider` chains down to the
+underlying transport error — `AgentError` → `ProviderError::Http` →
+`reqwest::Error` — instead of a flattened string, so downstream logging
+can trace root causes with `std::error::Error::source`.
+
+Two `ProviderError` variants changed shape (breaking for match sites
+only — the Display text is unchanged):
+
+```rust,ignore
+// 0.5.1
+match err {
+    ProviderError::Http { message } => log(message),
+    ProviderError::Parse { message } => log(message),
+    _ => {}
+}
+
+// 0.6.0
+match err {
+    ProviderError::Http(source) => log(source.to_string()), // Box<dyn Error + Send + Sync>
+    ProviderError::Parse(message) => log(message),
+    _ => {}
+}
+```
+
+Use [`ProviderError::http_message(msg)`] to synthesize a
+message-based Http error when no underlying error exists (0.5.1 code
+constructing `Http { message }` directly was doing exactly that).
+`DeepSeekError`, `AgentError`, and `ToolError` keep their variant
+shapes and Display text — the change is the derived impls only.
+Note `ProviderError` remains `#[non_exhaustive]`, so downstream
+`match` arms on it always needed a wildcard.
+
+## Lock poisoning no longer panics
+
+In 0.5.1, any poisoned lock on conversation memory (or the
+intervention router) panicked and aborted the whole agent run — or the
+whole process in hooks. 0.6.0 degrades gracefully:
+
+- **Engine**: memory locks fail the run with `AgentError::Memory` —
+  hooks and terminal events still fire via the normal `fail_run`
+  path, and the TUI receives `RunFailed` + `Done` instead of a panic.
+- **Hooks / extensions** (`MicroCompactHook`, `MacroCompactHook`,
+  `PersistenceHook`, `ObservabilityHook`, `ContextBlockHook`,
+  subagent context inheritance): log an error and skip their action
+  for this event.
+- **`ResponseRouter`**: `route()` returns `false` (and logs) instead
+  of panicking; intervention requesters unwind via their own timeout.
+
+Behavioral note for downstream: code that relied on a poisoned lock
+aborting loudly (e.g. `catch_unwind` around `run()`) now sees a
+normal `Err(AgentError::Memory)` instead.

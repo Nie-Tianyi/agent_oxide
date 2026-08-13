@@ -368,7 +368,14 @@ fn build_subagent_memory(config: &SubagentConfig, parent_memory: &SharedMemory) 
     if let Some(n) = config.inherit_context_messages
         && n > 0
     {
-        let parent = parent_memory.read().expect("parent memory lock");
+        let Ok(parent) = parent_memory.read() else {
+            tracing::warn!(
+                "parent memory lock poisoned — subagent starts without inherited context"
+            );
+            // Skip inheritance entirely — the subagent runs on a fresh
+            // memory seeded with its system prompt.
+            return Arc::new(std::sync::RwLock::new(memory));
+        };
         // Collect all non-System messages, then take the last `n`.
         let all_non_system: Vec<&Message> = parent
             .messages()

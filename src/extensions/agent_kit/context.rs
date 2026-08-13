@@ -126,7 +126,10 @@ impl Default for ContextBlockHook {
 
 impl AgentHook for ContextBlockHook {
     fn on_llm_start(&self, _session_id: &str, memory: &SharedMemory) {
-        let mut mem = memory.write().expect("memory lock poisoned");
+        let Ok(mut mem) = memory.write() else {
+            tracing::error!("memory lock poisoned — context blocks not injected");
+            return;
+        };
         for block in &self.blocks {
             let marker = format!("[CONTEXT:{}]", block.key());
             // Remove-then-reinsert (same pattern as SkillHook/ProfileHook).

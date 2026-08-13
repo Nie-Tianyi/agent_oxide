@@ -123,7 +123,10 @@ impl<C: LLMClient> AgentHook for PersistenceHook<C> {
     }
 
     fn on_run_finish(&self, _session_id: &str, _outcome: &RunOutcome, memory: &SharedMemory) {
-        let mem = memory.read().expect("memory lock poisoned");
+        let Ok(mem) = memory.read() else {
+            tracing::error!("memory lock poisoned — conversation not persisted");
+            return;
+        };
         let name = default_thread_name(&self.workspace_root, &self.config);
         let messages = mem.messages.len();
         let path = self

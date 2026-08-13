@@ -50,6 +50,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is now "Deny with reason…": the free-form text is recorded in the
   audit trail and returned to the model as the denial reason, and is
   never treated as approval.
+- **Error types derive `thiserror` and preserve source chains** —
+  `ProviderError::Http` now carries the underlying transport error
+  (`Box<dyn Error + Send + Sync>`) instead of a flattened string, so
+  `AgentError::Provider` chains down to e.g. `reqwest::Error` via
+  `std::error::Error::source`.  **Breaking for downstream match sites:**
+  `ProviderError::Http { message }` → `ProviderError::Http(_)` and
+  `ProviderError::Parse { message }` → `ProviderError::Parse(_)`;
+  `ProviderError::http_message(msg)` constructs a message-based Http
+  error.  `DeepSeekError` / `AgentError` / `ToolError` keep their
+  Display text.
+- **Lock poisoning no longer panics the run** — every production
+  `expect("… lock poisoned")` in the engine and extensions is gone.
+  Engine memory locks now fail the run with `AgentError::Memory` (via
+  `fail_run` — hooks and terminal events still fire); hooks and
+  extensions degrade to log-and-skip; `ResponseRouter` reports routing
+  failure instead of panicking.
 
 Breaking changes above are documented with before/after code in
 [docs/migration-guide-0.5.1-to-0.6.0.md](docs/migration-guide-0.5.1-to-0.6.0.md)

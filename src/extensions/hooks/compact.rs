@@ -107,7 +107,10 @@ impl MicroCompactHook {
 
 impl AgentHook for MicroCompactHook {
     fn on_llm_start(&self, _session_id: &str, memory: &SharedMemory) {
-        let mut mem = memory.write().expect("memory lock poisoned");
+        let Ok(mut mem) = memory.write() else {
+            tracing::error!("memory lock poisoned — skipping micro-compaction");
+            return;
+        };
         let compacted = compact_messages(
             &mut mem.messages,
             self.keep_recent,
@@ -167,7 +170,10 @@ impl<C: LLMClient> MacroCompactHook<C> {
 impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
     fn on_llm_start(&self, _session_id: &str, memory: &SharedMemory) {
         let needs = {
-            let mem = memory.read().expect("memory lock poisoned");
+            let Ok(mem) = memory.read() else {
+                tracing::error!("memory lock poisoned — skipping macro-compaction");
+                return;
+            };
             match &mem.last_usage {
                 Some(usage) => {
                     let triggered = usage.prompt_tokens as usize > self.threshold;
@@ -193,7 +199,10 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
         }
 
         let old = {
-            let mut mem = memory.write().expect("memory lock poisoned");
+            let Ok(mut mem) = memory.write() else {
+                tracing::error!("memory lock poisoned — skipping macro-compaction");
+                return;
+            };
             drain_for_compact(&mut mem.messages, self.keep_last_n)
         };
         tracing::debug!(
@@ -209,7 +218,12 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
         // be merged into the new summary.  It is NOT removed yet — if the
         // summarisation call fails, the old summary must survive.
         let prev_summary = {
-            let mem = memory.read().expect("memory lock poisoned");
+            let Ok(mem) = memory.read() else {
+                tracing::error!(
+                    "memory lock poisoned — continuing macro-compaction without previous summary"
+                );
+                return;
+            };
             mem.messages
                 .iter()
                 .find(|m| m.role == Role::System && m.content.starts_with(COMPACT_SUMMARY_MARKER))
@@ -321,7 +335,10 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
         };
 
         if !summary.is_empty() {
-            let mut mem = memory.write().expect("memory lock poisoned");
+            let Ok(mut mem) = memory.write() else {
+                tracing::error!("memory lock poisoned — compacted summary could not be inserted");
+                return;
+            };
             // Remove any stale [COMPACT_SUMMARY] message — replaced by the
             // merged summary below.  Keeps exactly one summary in memory.
             mem.messages.retain(|m| {

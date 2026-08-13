@@ -1,23 +1,14 @@
 //! Error types for the tools system.
 
-use std::fmt;
+use thiserror::Error;
 
 /// Error produced during tool execution.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Error)]
 pub enum ToolError {
     /// Tool runtime error (division by zero, invalid expression, etc.).
+    #[error("tool execution error: {0}")]
     Execution(String),
     /// Invalid arguments — JSON parse failure, missing required field, wrong type.
+    #[error("invalid tool arguments: {0}")]
     InvalidArgs(String),
 }
-
-impl fmt::Display for ToolError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Execution(reason) => write!(f, "tool execution error: {reason}"),
-            Self::InvalidArgs(reason) => write!(f, "invalid tool arguments: {reason}"),
-        }
-    }
-}
-
-impl std::error::Error for ToolError {}

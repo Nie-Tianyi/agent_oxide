@@ -200,7 +200,9 @@ async fn codeact_generate<C: LLMClient + Clone + 'static, T: DeserializeOwned + 
 
         // Seed the system prompt before the first user turn.
         {
-            let mut mem = agent.memory().write().expect("memory lock poisoned");
+            let mut mem = agent.memory().write().map_err(|_| {
+                GenerationError::Run(AgentError::Memory("memory lock poisoned".into()))
+            })?;
             mem.push(Message::new(Role::System, system_prompt));
         }
 

@@ -2,10 +2,10 @@
 
 How to upgrade downstream crates from `agent_oxide` 0.5.1 to 0.6.0.
 
-> **This is a living document.** It is maintained alongside the
-> `[Unreleased] → 0.6.0` section of `CHANGELOG.md` — every breaking change
-> that lands on the road to 0.6.0 gets an entry here. Check back before
-> you cut a release.
+> **0.6.0 was released on 2026-08-14** — the entries below are final.
+> For changes landing after the release, follow the same pattern: add
+> entries to a new migration guide (0.6.0 → 0.7.0) alongside the
+> `[Unreleased]` section of `CHANGELOG.md`.
 
 ## Summary
 

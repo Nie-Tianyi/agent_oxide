@@ -10,8 +10,8 @@
 //!
 //! ```toml
 //! [dependencies]
-//! agent_oxide = "0.5"
-//! agent-oxide-macros = "0.5"
+//! agent_oxide = "0.6"
+//! agent-oxide-macros = "0.6"
 //! ```
 //!
 //! # Quick start

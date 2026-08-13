@@ -5,53 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.5.1] - 2026-08-13
-
-### Fixed
-
-- **Concurrent-shell quota leak when another hook rejects a shell call** —
-  `SandboxHook` reserved an `active_shells` slot in `before_tool_call`,
-  but the engine's rejection path gave no terminal callback, so a
-  rejection by a *later* hook (or a panicking tool task) never released
-  it — two such events permanently exhausted `max_concurrent_shells`
-  (default 2) and the session could never run a shell again.  Slots are
-  now RAII guards released by `on_tool_rejected` / `after_tool_call` /
-  `on_tool_failed`, with `on_run_start` / `on_run_finish` backstops and
-  per-session counter cleanup (`finish_session`).
-- **Observability hook rejection tracking activated** — `tool_rejection_count`
-  is now incremented, `tool_starts` entries are cleaned up on rejection,
-  and the previously reserved `TraceEvent::ToolCallRejected` is emitted.
-- **Macro-compaction no longer loses history on summariser failure** —
-  the drain happened *before* the summariser call, so a failed
-  summarisation permanently destroyed the drained messages.  The hook now
-  snapshots the would-be-drained messages, calls the summariser, and only
-  drains + inserts the summary **after a successful summarisation** — a
-  failure leaves the conversation fully intact.
-- **Macro-compaction retry gate actually works** — `compaction_failed`
-  was written but never read, so every subsequent LLM call re-drained and
-  re-called the summariser in a tight loop.  The flag is now read: after
-  a failure, retries are skipped until the context grows beyond the size
-  at which it last failed (`threshold / 10`, min 4096 tokens), and
-  `on_run_start` resets the gate for a fresh conversation.
-- **`WorkspaceFs` TOCTOU re-check false positive on concurrent writes** —
-  the `(len, mtime)` identity check ran *before* the per-file write lock,
-  so a concurrent in-process write of equal-length content flipped the
-  mtime between the check's two `metadata()` calls and was misreported
-  as `WorkspaceEscape("file identity changed — possible symlink swap")`.
-  `write` / `edit_lines` / `edit_content` now run the re-check **under**
-  the per-file lock, which is held across the whole mutation; in-process
-  operations serialize cleanly and external symlink swaps are still
-  detected.  (Surfaced as the flaky
-  `test_concurrent_write_and_edit_consistent` under full-suite load.)
-
-- **MSRV raised to 1.88** — required by `time` 0.3.47+ (patched
-  RUSTSEC-2026-0009, an RFC 2822 parse stack-exhaustion DoS; unpatched
-  versions could not be pinned without the bump). The 0.5.0 release's
-  declared MSRV of 1.85 was too low once `time` resolved fresh.
-- Collapsed nested `if-let` chains flagged by newer clippy
-  (`collapsible_if`); no behavioral change.
-
-## [Unreleased]
+## [0.6.0] - 2026-08-14
 
 ### Changed
 
@@ -183,4 +137,54 @@ Breaking changes above are documented with before/after code in
   (including `agent_oxide::agent_kit::serde` / `schemars` re-exports), so
   consumers only need the two crates on crates.io.
 
-[Unreleased]: https://github.com/Nie-Tianyi/agent_oxide/compare/master...HEAD
+
+### Fixed
+
+- **Concurrent-shell quota leak when another hook rejects a shell call** —
+  `SandboxHook` reserved an `active_shells` slot in `before_tool_call`,
+  but the engine's rejection path gave no terminal callback, so a
+  rejection by a *later* hook (or a panicking tool task) never released
+  it — two such events permanently exhausted `max_concurrent_shells`
+  (default 2) and the session could never run a shell again.  Slots are
+  now RAII guards released by `on_tool_rejected` / `after_tool_call` /
+  `on_tool_failed`, with `on_run_start` / `on_run_finish` backstops and
+  per-session counter cleanup (`finish_session`).
+- **Observability hook rejection tracking activated** — `tool_rejection_count`
+  is now incremented, `tool_starts` entries are cleaned up on rejection,
+  and the previously reserved `TraceEvent::ToolCallRejected` is emitted.
+- **Macro-compaction no longer loses history on summariser failure** —
+  the drain happened *before* the summariser call, so a failed
+  summarisation permanently destroyed the drained messages.  The hook now
+  snapshots the would-be-drained messages, calls the summariser, and only
+  drains + inserts the summary **after a successful summarisation** — a
+  failure leaves the conversation fully intact.
+- **Macro-compaction retry gate actually works** — `compaction_failed`
+  was written but never read, so every subsequent LLM call re-drained and
+  re-called the summariser in a tight loop.  The flag is now read: after
+  a failure, retries are skipped until the context grows beyond the size
+  at which it last failed (`threshold / 10`, min 4096 tokens), and
+  `on_run_start` resets the gate for a fresh conversation.
+- **`WorkspaceFs` TOCTOU re-check false positive on concurrent writes** —
+  the `(len, mtime)` identity check ran *before* the per-file write lock,
+  so a concurrent in-process write of equal-length content flipped the
+  mtime between the check's two `metadata()` calls and was misreported
+  as `WorkspaceEscape("file identity changed — possible symlink swap")`.
+  `write` / `edit_lines` / `edit_content` now run the re-check **under**
+  the per-file lock, which is held across the whole mutation; in-process
+  operations serialize cleanly and external symlink swaps are still
+  detected.  (Surfaced as the flaky
+  `test_concurrent_write_and_edit_consistent` under full-suite load.)
+## [0.5.1] - 2026-08-13
+
+### Fixed
+
+- **MSRV raised to 1.88** — required by `time` 0.3.47+ (patched
+  RUSTSEC-2026-0009, an RFC 2822 parse stack-exhaustion DoS; unpatched
+  versions could not be pinned without the bump). The 0.5.0 release's
+  declared MSRV of 1.85 was too low once `time` resolved fresh.
+- Collapsed nested `if-let` chains flagged by newer clippy
+  (`collapsible_if`); no behavioral change.
+
+
+[0.6.0]: https://github.com/Nie-Tianyi/agent_oxide/compare/v0.5.0...v0.6.0
+[0.5.1]: https://github.com/Nie-Tianyi/agent_oxide/compare/v0.5.0...v0.5.1

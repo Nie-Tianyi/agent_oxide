@@ -29,7 +29,7 @@ persistence, skills, observability, subagents).
 
 ```toml
 [dependencies]
-agent_oxide = "0.5"
+agent_oxide = "0.6"
 ```
 
 ## Quick start
@@ -124,8 +124,8 @@ Everything ships in **two crates**: `agent_oxide` (all framework code) and
 
 ```toml
 [dependencies]
-agent_oxide = "0.5"
-agent-oxide-macros = "0.5"
+agent_oxide = "0.6"
+agent-oxide-macros = "0.6"
 ```
 
 Every feature is a module of `agent_oxide`:

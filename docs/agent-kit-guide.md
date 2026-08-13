@@ -25,8 +25,8 @@ Three runnable, end-to-end examples live in `examples/`
 
 ```toml
 [dependencies]
-agent_oxide = "0.5"
-agent-oxide-macros = "0.5"        # or [dev-dependencies] if only examples use it
+agent_oxide = "0.6"
+agent-oxide-macros = "0.6"        # or [dev-dependencies] if only examples use it
 tokio = { version = "1", features = ["full"] }
 ```
 

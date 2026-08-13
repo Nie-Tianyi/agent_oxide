@@ -17,7 +17,8 @@
 //! Non-shell tools pass through without checks (their sandboxing is
 //! handled by [`WorkspaceFs`]).
 
-use std::sync::{Arc, OnceLock};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use crate::engine::intervention::{self, InterventionError};
@@ -27,7 +28,7 @@ use crate::provider::ToolCall;
 use tokio::sync::mpsc;
 
 use super::audit_logger::{AuditEntry, AuditLogger};
-use super::resource_tracker::ResourceTracker;
+use super::resource_tracker::{ResourceTracker, ShellSlot};
 use super::shell_filter::{CommandVerdict, ShellFilter};
 
 pub struct SandboxHook {
@@ -42,6 +43,13 @@ pub struct SandboxHook {
     resource_tracker: Arc<ResourceTracker>,
     /// Append-only audit log.
     audit_logger: Arc<AuditLogger>,
+    /// Reserved concurrent-shell slots parked in `before_tool_call`,
+    /// keyed by tool-call id.  Released by exactly one terminal callback
+    /// — `after_tool_call` / `on_tool_failed` (commit) or
+    /// `on_tool_rejected` / run start / run finish (cancel) — so the
+    /// quota counter converges even when another hook rejects the call
+    /// or the tool task panics.
+    pending_slots: Mutex<HashMap<String, ShellSlot>>,
 }
 
 impl SandboxHook {
@@ -59,6 +67,7 @@ impl SandboxHook {
             shell_filter,
             resource_tracker,
             audit_logger,
+            pending_slots: Mutex::new(HashMap::new()),
         }
     }
 
@@ -162,7 +171,31 @@ impl SandboxHook {
 impl AgentHook for SandboxHook {
     fn before_tool_call(&self, session_id: &str, tool_call: &ToolCall) -> Result<(), AgentError> {
         // ── Resource quota check (all tools) ────────────────────────
-        if let Err(reason) = self
+        // Shell calls reserve a concurrent-shell slot (RAII guard)
+        // instead of the bare check() — the slot is parked keyed by
+        // tool-call id and released by a terminal callback no matter
+        // how the call ends.  Non-shell tools only check the total
+        // operations quota.
+        if tool_call.function.name == "shell" {
+            match self.resource_tracker.acquire_shell_slot(session_id) {
+                Ok(slot) => {
+                    let mut slots = self.pending_slots.lock().unwrap_or_else(|e| e.into_inner());
+                    slots.insert(tool_call.id.clone(), slot);
+                }
+                Err(reason) => {
+                    tracing::warn!(
+                        session_id,
+                        tool = %tool_call.function.name,
+                        reason = %reason,
+                        "Tool call rejected: resource quota exceeded"
+                    );
+                    return Err(AgentError::ToolRejected {
+                        name: tool_call.function.name.clone(),
+                        reason,
+                    });
+                }
+            }
+        } else if let Err(reason) = self
             .resource_tracker
             .check(session_id, &tool_call.function.name)
         {
@@ -202,9 +235,11 @@ impl AgentHook for SandboxHook {
                     verdict: "blocked".into(),
                     outcome: reason.clone(),
                 });
-                // Cancel the active_shells increment from check() —
-                // the tool was rejected before execution.
-                self.resource_tracker.cancel(session_id, "shell");
+                // Release the reserved slot — dropping it cancels the
+                // reservation made at the top of before_tool_call.
+                if let Ok(mut slots) = self.pending_slots.lock() {
+                    slots.remove(&tool_call.id);
+                }
                 Err(AgentError::ToolRejected {
                     name: "shell".into(),
                     reason: format!("Blocked by sandbox: {reason}"),
@@ -254,20 +289,26 @@ impl AgentHook for SandboxHook {
                         Ok(())
                     }
                     Err(e) => {
-                        // Cancel the active_shells increment from check() —
-                        // the tool was rejected by the user before execution.
+                        // Release the reserved slot — dropping it cancels
+                        // the reservation made at the top of
+                        // before_tool_call.
                         tracing::warn!(
                             session_id,
                             command = %command,
                             error = %e,
                             "Shell command rejected: user denied or approval timed out"
                         );
-                        self.resource_tracker.cancel(session_id, "shell");
+                        if let Ok(mut slots) = self.pending_slots.lock() {
+                            slots.remove(&tool_call.id);
+                        }
                         // The denial reason (including a custom reason
                         // typed via "Deny with reason…") belongs in the
                         // audit trail.
                         let reason_text = e.to_string();
-                        let boundary = crate::util::floor_char_boundary(&reason_text, 200);
+                        let boundary = crate::util::floor_char_boundary(
+                            &reason_text,
+                            reason_text.len().min(200),
+                        );
                         self.audit_logger.log(AuditEntry {
                             timestamp: crate::util::iso8601_now(),
                             session_id: session_id.to_string(),
@@ -284,9 +325,23 @@ impl AgentHook for SandboxHook {
     }
 
     fn after_tool_call(&self, session_id: &str, tool_call: &ToolCall, observation: &str) {
-        // Record the operation in the resource tracker.
-        self.resource_tracker
-            .record(session_id, &tool_call.function.name);
+        // Release the reserved slot / record the completed operation.
+        // Shell calls commit their slot; non-shell tools just record.
+        if tool_call.function.name == "shell" {
+            if let Ok(mut slots) = self.pending_slots.lock()
+                && let Some(slot) = slots.remove(&tool_call.id)
+            {
+                slot.commit();
+            } else {
+                tracing::warn!(
+                    tool_call_id = %tool_call.id,
+                    "shell completed without a pending slot"
+                );
+            }
+        } else {
+            self.resource_tracker
+                .record(session_id, &tool_call.function.name);
+        }
         // Also log non-shell operations so the audit trail is complete.
         // (Shell operations are already logged inline in before_tool_call.)
         if tool_call.function.name != "shell" {
@@ -306,7 +361,37 @@ impl AgentHook for SandboxHook {
         }
     }
 
+    fn on_run_start(&self, _session_id: &str, _user_input: &str, _memory: &SharedMemory) {
+        // A previous run may have been cancelled — cancellation aborts
+        // the agent task and bypasses hooks, so any slots it reserved
+        // are still parked here.  Release them so the quota counters
+        // converge before the new run starts.
+        if let Ok(mut slots) = self.pending_slots.lock()
+            && !slots.is_empty()
+        {
+            tracing::debug!(
+                count = slots.len(),
+                "releasing stale shell slots from a previous run"
+            );
+            slots.clear();
+        }
+    }
+
     fn on_run_finish(&self, session_id: &str, outcome: &RunOutcome, _memory: &SharedMemory) {
+        // Backstop: release any slots that never reached a terminal
+        // callback (e.g. a tool task panicked mid-execution, or an
+        // external hook rejected the call before our notification ran).
+        if let Ok(mut slots) = self.pending_slots.lock()
+            && !slots.is_empty()
+        {
+            tracing::warn!(
+                count = slots.len(),
+                "releasing uncommitted shell slots at run finish"
+            );
+            slots.clear();
+        }
+        self.resource_tracker.finish_session(session_id);
+
         let verdict = match outcome {
             RunOutcome::Success { .. } => "success",
             RunOutcome::Error { .. } => "error",
@@ -322,10 +407,42 @@ impl AgentHook for SandboxHook {
         });
     }
 
+    fn on_tool_rejected(&self, session_id: &str, tool_call: &ToolCall, error: &str) {
+        // A later hook rejected this call after our before_tool_call
+        // reserved a slot.  Dropping the slot cancels the reservation —
+        // without this, two rejections would permanently exhaust
+        // max_concurrent_shells for the session.
+        if let Ok(mut slots) = self.pending_slots.lock()
+            && let Some(slot) = slots.remove(&tool_call.id)
+        {
+            drop(slot);
+        }
+        // Record the rejection in the audit trail (the rejecting hook
+        // audits its own decision; this entry records that the sandbox
+        // released its reservation).
+        let boundary = crate::util::floor_char_boundary(error, error.len().min(200));
+        self.audit_logger.log(AuditEntry {
+            timestamp: crate::util::iso8601_now(),
+            session_id: session_id.to_string(),
+            tool: tool_call.function.name.clone(),
+            command: tool_call.function.arguments.clone(),
+            verdict: "hook_rejected".into(),
+            outcome: error[..boundary].to_string(),
+        });
+    }
+
     fn on_tool_failed(&self, session_id: &str, tool_call: &ToolCall, error: &str) {
-        // Record the failure in the resource tracker and audit log.
-        self.resource_tracker
-            .record(session_id, &tool_call.function.name);
+        // Release the reserved slot / record the failed operation.
+        if tool_call.function.name == "shell" {
+            if let Ok(mut slots) = self.pending_slots.lock()
+                && let Some(slot) = slots.remove(&tool_call.id)
+            {
+                slot.commit();
+            }
+        } else {
+            self.resource_tracker
+                .record(session_id, &tool_call.function.name);
+        }
         self.audit_logger.log(AuditEntry {
             timestamp: crate::util::iso8601_now(),
             session_id: session_id.to_string(),
@@ -482,5 +599,115 @@ mod tests {
         })
         .unwrap_err();
         assert!(err.to_string().contains("denied"), "got: {err}");
+    }
+
+    // ── Slot lifecycle pairing ─────────────────────────────────────
+
+    /// Hook wired with a 1-slot shell quota — a leaked reservation
+    /// makes the very next shell call fail with "too many concurrent
+    /// shells" (the pre-fix failure mode).
+    fn make_tight_hook(tmp: &tempfile::TempDir) -> SandboxHook {
+        let mut config = SandboxConfig::default();
+        config.quotas.max_concurrent_shells = 1;
+        SandboxHook::new(
+            ShellFilter::from_config(&config),
+            Arc::new(ResourceTracker::new(&config)),
+            Arc::new(AuditLogger::new(&config, tmp.path())),
+            Arc::new(ResponseRouter::new()),
+        )
+    }
+
+    fn shell_tool_call(id: &str) -> ToolCall {
+        ToolCall {
+            index: 0,
+            id: id.into(),
+            kind: ToolCallKind::Function,
+            function: ToolCallFunction {
+                name: "shell".into(),
+                arguments: r#"{"command": "echo hi"}"#.into(),
+            },
+        }
+    }
+
+    fn make_memory() -> SharedMemory {
+        Arc::new(std::sync::RwLock::new(crate::memory::Memory::new()))
+    }
+
+    #[test]
+    fn test_rejection_by_later_hook_releases_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hook = make_tight_hook(&tmp);
+
+        // The shell passes the sandbox checks (echo is auto-approved)
+        // and reserves the only slot.
+        hook.before_tool_call("s", &shell_tool_call("call_1"))
+            .unwrap();
+
+        // A later hook rejects the call — the engine notifies us via
+        // on_tool_rejected.  Without the slot release, every subsequent
+        // shell call in this session would fail with "too many
+        // concurrent shells" forever (the pre-fix bug).
+        hook.on_tool_rejected("s", &shell_tool_call("call_1"), "blocked by policy hook");
+
+        // The slot is free again.
+        hook.before_tool_call("s", &shell_tool_call("call_2"))
+            .unwrap();
+        // Run finish releases the second slot and resets the session.
+        hook.on_run_finish(
+            "s",
+            &RunOutcome::Success {
+                answer: "done".into(),
+            },
+            &make_memory(),
+        );
+        hook.before_tool_call("s", &shell_tool_call("call_3"))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_own_denial_releases_slot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hook = make_tight_hook(&tmp);
+
+        // `curl` requires approval; without an agent channel the prompt
+        // fails → denial path → the reserved slot must be released.
+        let tc = ToolCall {
+            index: 0,
+            id: "call_1".into(),
+            kind: ToolCallKind::Function,
+            function: ToolCallFunction {
+                name: "shell".into(),
+                arguments: r#"{"command": "curl example.com"}"#.into(),
+            },
+        };
+        assert!(hook.before_tool_call("s", &tc).is_err());
+
+        // Slot free again — a fresh auto-approved shell passes.
+        hook.before_tool_call("s", &shell_tool_call("call_2"))
+            .unwrap();
+    }
+
+    #[test]
+    fn test_run_finish_drains_stale_slots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hook = make_tight_hook(&tmp);
+
+        // Simulate the panic path: the slot is parked but no terminal
+        // callback ever fires.
+        hook.before_tool_call("s", &shell_tool_call("call_1"))
+            .unwrap();
+
+        // Run finish is the backstop.
+        hook.on_run_finish(
+            "s",
+            &RunOutcome::Error {
+                error: "boom".into(),
+            },
+            &make_memory(),
+        );
+
+        // A new run starts with a clean quota.
+        hook.before_tool_call("s", &shell_tool_call("call_2"))
+            .unwrap();
     }
 }

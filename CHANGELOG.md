@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Concurrent-shell quota leak when another hook rejects a shell call** —
+  `SandboxHook` reserved an `active_shells` slot in `before_tool_call`,
+  but the engine's rejection path gave no terminal callback, so a
+  rejection by a *later* hook (or a panicking tool task) never released
+  it — two such events permanently exhausted `max_concurrent_shells`
+  (default 2) and the session could never run a shell again.  Slots are
+  now RAII guards released by `on_tool_rejected` / `after_tool_call` /
+  `on_tool_failed`, with `on_run_start` / `on_run_finish` backstops and
+  per-session counter cleanup (`finish_session`).
+- **Observability hook rejection tracking activated** — `tool_rejection_count`
+  is now incremented, `tool_starts` entries are cleaned up on rejection,
+  and the previously reserved `TraceEvent::ToolCallRejected` is emitted.
 - **`WorkspaceFs` TOCTOU re-check false positive on concurrent writes** —
   the `(len, mtime)` identity check ran *before* the per-file write lock,
   so a concurrent in-process write of equal-length content flipped the
@@ -84,6 +96,15 @@ Breaking changes above are documented with before/after code in
 
 ### Added
 
+- **`AgentHook::on_tool_rejected`** — new defaulted callback (non-breaking
+  for implementors) closing the hook terminal-callback pairing guarantee:
+  when a tool call is rejected, every hook *before* the rejecting hook in
+  the chain — i.e. every hook whose `before_tool_call` returned `Ok` for
+  that call — receives exactly one terminal callback
+  (`after_tool_call` / `on_tool_failed` / `on_tool_rejected`).
+- **`ResourceTracker::acquire_shell_slot` / `ShellSlot`** — RAII
+  concurrent-shell reservation: `commit()` records the completed
+  operation, dropping without committing cancels the reservation.
 - **`ShellRunner` + `ShellTool`** — the sandbox execution layers
   (env sanitization, tree watchdog kill, bounded output capture,
   decode/truncation) and the second-pass policy check now ship as

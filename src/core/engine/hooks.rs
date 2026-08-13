@@ -37,6 +37,7 @@ use super::agent::{AgentError, RunOutcome};
 /// | [`before_tool_call`](Self::before_tool_call) | Before tool execution | Tool |
 /// | [`after_tool_call`](Self::after_tool_call) | After tool execution (success) | Tool |
 /// | [`on_tool_failed`](Self::on_tool_failed) | When tool execution fails | Tool |
+/// | [`on_tool_rejected`](Self::on_tool_rejected) | When a later hook rejects the call | Tool |
 pub trait AgentHook: Send + Sync {
     // ── Run lifecycle ─────────────────────────────────────────────────────────
 
@@ -106,4 +107,24 @@ pub trait AgentHook: Send + Sync {
     /// only on success.  Use this to distinguish failures in audit logs
     /// and track per-tool error rates.
     fn on_tool_failed(&self, _session_id: &str, _tool_call: &ToolCall, _error: &str) {}
+
+    /// Called when a tool call is rejected **after this hook's
+    /// [`before_tool_call`](Self::before_tool_call) returned `Ok`** —
+    /// i.e. a later hook in the chain blocked it, or the engine refused
+    /// it before execution.
+    ///
+    /// ## Terminal-callback pairing guarantee
+    ///
+    /// For each tool call, a hook receives **exactly one** terminal
+    /// callback — [`after_tool_call`](Self::after_tool_call),
+    /// [`on_tool_failed`](Self::on_tool_failed), or this method — **iff**
+    /// its `before_tool_call` returned `Ok` for that call.  Hooks that
+    /// run before the rejecting hook in the chain get
+    /// [`on_tool_rejected`](Self::on_tool_rejected); hooks after it
+    /// never saw the call and get no terminal callback.
+    ///
+    /// Use this to roll back side effects taken in `before_tool_call`
+    /// (quota slots, timing records, …) when some *other* hook rejects
+    /// the call — the rejector itself must clean up its own state.
+    fn on_tool_rejected(&self, _session_id: &str, _tool_call: &ToolCall, _error: &str) {}
 }

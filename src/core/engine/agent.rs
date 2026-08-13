@@ -471,7 +471,7 @@ impl<C: LLMClient> Agent<C> {
 
         for (i, tc) in tool_calls.iter().enumerate() {
             let mut blocked = false;
-            for hook in &self.ctx.hooks {
+            for (j, hook) in self.ctx.hooks.iter().enumerate() {
                 if let Err(e) = hook.before_tool_call("default", tc) {
                     // Blocked — write rejection to memory + emit event immediately.
                     tracing::warn!(
@@ -488,6 +488,17 @@ impl<C: LLMClient> Agent<C> {
                             name: tc.function.name.clone(),
                             reason: e.to_string(),
                         });
+                    }
+                    // ── Terminal-callback pairing guarantee ──────────
+                    // Every hook BEFORE the rejector approved this call
+                    // in before_tool_call and would otherwise never get
+                    // a terminal callback — its side effects (quota
+                    // slots, timing records) would leak.  The rejector
+                    // cleans up its own state; hooks after it never saw
+                    // the call and need no callback.
+                    let reason = e.to_string();
+                    for hook in &self.ctx.hooks[..j] {
+                        hook.on_tool_rejected("default", tc, &reason);
                     }
                     blocked = true;
                     break;
@@ -1576,6 +1587,158 @@ mod tests {
         assert!(
             transport.to_string().contains("refused"),
             "transport error must survive the chain, got: {transport}"
+        );
+    }
+
+    // ── Hook terminal-callback pairing (integration) ──────────────
+
+    use crate::provider::{Choice, ChoiceMessage};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// Scripted LLM client — pops responses from a queue.
+    struct ScriptedClient {
+        responses: Mutex<VecDeque<CompletionResponse>>,
+    }
+
+    impl LLMClient for ScriptedClient {
+        async fn generate(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<CompletionResponse, ProviderError> {
+            Ok(self
+                .responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("no scripted response left"))
+        }
+
+        async fn stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<StreamChunk, ProviderError>>,
+            ProviderError,
+        > {
+            unreachable!("ScriptedClient::stream should not be called (streaming disabled)")
+        }
+    }
+
+    /// Records every `on_tool_rejected` notification it receives.
+    struct RecordingHook {
+        rejections: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl AgentHook for RecordingHook {
+        fn on_tool_rejected(&self, _session_id: &str, tool_call: &ToolCall, error: &str) {
+            self.rejections
+                .lock()
+                .unwrap()
+                .push((tool_call.id.clone(), error.to_string()));
+        }
+    }
+
+    /// Rejects every tool call it sees.
+    struct RejectAllHook;
+
+    impl AgentHook for RejectAllHook {
+        fn before_tool_call(
+            &self,
+            _session_id: &str,
+            tool_call: &ToolCall,
+        ) -> Result<(), AgentError> {
+            Err(AgentError::ToolRejected {
+                name: tool_call.function.name.clone(),
+                reason: "blocked by test hook".into(),
+            })
+        }
+    }
+
+    fn assistant_with_tool_calls(tc: ToolCall) -> CompletionResponse {
+        CompletionResponse {
+            id: "1".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "test".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChoiceMessage {
+                    role: Role::Assistant,
+                    content: None,
+                    reasoning_content: None,
+                    tool_calls: Some(vec![tc]),
+                },
+                finish_reason: Some(FinishReason::ToolCalls),
+            }],
+            usage: None,
+        }
+    }
+
+    fn plain_response(text: &str) -> CompletionResponse {
+        CompletionResponse {
+            id: "2".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "test".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChoiceMessage {
+                    role: Role::Assistant,
+                    content: Some(text.into()),
+                    reasoning_content: None,
+                    tool_calls: None,
+                },
+                finish_reason: Some(FinishReason::Stop),
+            }],
+            usage: None,
+        }
+    }
+
+    /// End-to-end: a tool call rejected by a later hook must deliver
+    /// `on_tool_rejected` to every hook that approved it beforehand —
+    /// the terminal-callback pairing guarantee that keeps hook side
+    /// effects (quota slots, timing records) from leaking.
+    #[test]
+    fn test_hooks_before_rejector_get_on_tool_rejected() {
+        let tc = ToolCall {
+            index: 0,
+            id: "call_1".into(),
+            kind: ToolCallKind::Function,
+            function: ToolCallFunction {
+                name: "shell".into(),
+                arguments: "{}".into(),
+            },
+        };
+        let client = ScriptedClient {
+            responses: Mutex::new(VecDeque::from([
+                assistant_with_tool_calls(tc),
+                plain_response("done"),
+            ])),
+        };
+        let rejections = Arc::new(Mutex::new(Vec::new()));
+
+        let agent = Agent::builder(client, "test-model")
+            .streaming(false)
+            .hook(RecordingHook {
+                rejections: Arc::clone(&rejections),
+            })
+            .hook(RejectAllHook)
+            .build();
+
+        let answer = futures_executor::block_on(agent.run("hi")).unwrap();
+        assert_eq!(answer, "done", "run must complete after the rejection");
+
+        // The recording hook approved the call (its before_tool_call is
+        // a no-op Ok) and must therefore receive the terminal callback.
+        let got = rejections.lock().unwrap().clone();
+        assert_eq!(
+            got,
+            vec![(
+                "call_1".to_string(),
+                "tool 'shell' rejected: blocked by test hook".to_string()
+            )],
+            "hooks before the rejector must receive on_tool_rejected with the full error"
         );
     }
 }

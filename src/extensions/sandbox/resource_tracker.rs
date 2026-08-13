@@ -5,6 +5,7 @@
 
 use super::config::SandboxConfig;
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -32,6 +33,10 @@ impl ResourceTracker {
     }
 
     /// Check quotas before an operation. Returns `Ok(())` if within limits.
+    ///
+    /// For shell tools, prefer [`acquire_shell_slot`](Self::acquire_shell_slot) —
+    /// the RAII guard keeps the counter convergent when the call is later
+    /// rejected by a different hook or the tool panics.
     pub fn check(&self, session_id: &str, tool_name: &str) -> Result<(), String> {
         let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
         let stats = sessions.entry(session_id.to_string()).or_default();
@@ -75,6 +80,31 @@ impl ResourceTracker {
         Ok(())
     }
 
+    /// Check quotas and reserve a concurrent-shell slot for a shell
+    /// tool call.
+    ///
+    /// The returned [`ShellSlot`] must be released with
+    /// [`commit`](ShellSlot::commit) (records a completed operation) —
+    /// **dropping it without committing cancels the reservation**.  This
+    /// guarantees the `active_shells` counter converges on every path:
+    /// execution, tool failure, rejection by any hook, or a panicking
+    /// tool task.
+    pub fn acquire_shell_slot(self: &Arc<Self>, session_id: &str) -> Result<ShellSlot, String> {
+        self.check(session_id, "shell")?;
+        Ok(ShellSlot {
+            session_id: session_id.to_string(),
+            tracker: Arc::clone(self),
+            committed: false,
+        })
+    }
+
+    /// Drop all per-session counters for `session_id` (run finished).
+    /// Idempotent — unknown sessions are a no-op.
+    pub fn finish_session(&self, session_id: &str) {
+        let mut sessions = self.sessions.write().unwrap_or_else(|e| e.into_inner());
+        sessions.remove(session_id);
+    }
+
     /// Cancel a previously-checked operation — decrements the concurrent
     /// counter without recording a completed operation.  Call this when a
     /// tool passes `check()` but is subsequently rejected (e.g. by
@@ -107,6 +137,36 @@ impl Default for SessionStats {
         Self {
             total_operations: AtomicUsize::new(0),
             active_shells: AtomicUsize::new(0),
+        }
+    }
+}
+
+// ── ShellSlot ────────────────────────────────────────────────────────────────
+
+/// RAII reservation of a concurrent-shell slot.
+///
+/// Returned by [`ResourceTracker::acquire_shell_slot`].  [`commit`](Self::commit)
+/// records the operation as completed; dropping without committing
+/// cancels the reservation.
+pub struct ShellSlot {
+    session_id: String,
+    tracker: Arc<ResourceTracker>,
+    committed: bool,
+}
+
+impl ShellSlot {
+    /// Record the operation as completed — counts against the session
+    /// quota and releases the concurrent-shell slot.
+    pub fn commit(mut self) {
+        self.committed = true;
+        self.tracker.record(&self.session_id, "shell");
+    }
+}
+
+impl Drop for ShellSlot {
+    fn drop(&mut self) {
+        if !self.committed {
+            self.tracker.cancel(&self.session_id, "shell");
         }
     }
 }
@@ -221,5 +281,50 @@ mod tests {
         let tracker = make_tracker_with_limits(0, 10);
         let err = tracker.check("s1", "read").unwrap_err();
         assert!(err.contains("quota exceeded"), "got: {err}");
+    }
+
+    // ── ShellSlot RAII ────────────────────────────────────────────
+
+    #[test]
+    fn test_slot_commit_records_operation() {
+        let tracker = Arc::new(make_tracker_with_limits(100, 1));
+        let slot = tracker.acquire_shell_slot("s1").unwrap();
+        slot.commit();
+        // Committed slot released the shell counter and counted the op.
+        assert!(tracker.acquire_shell_slot("s1").is_ok());
+    }
+
+    #[test]
+    fn test_slot_drop_cancels_reservation() {
+        let tracker = Arc::new(make_tracker_with_limits(100, 1));
+        let slot = tracker.acquire_shell_slot("s1").unwrap();
+        // Dropping without commit cancels — the slot is free again.
+        drop(slot);
+        assert!(
+            tracker.acquire_shell_slot("s1").is_ok(),
+            "dropped slot must release the reservation"
+        );
+    }
+
+    #[test]
+    fn test_slot_enforces_concurrent_limit() {
+        let tracker = Arc::new(make_tracker_with_limits(100, 1));
+        let first = tracker.acquire_shell_slot("s1").unwrap();
+        assert!(
+            tracker.acquire_shell_slot("s1").is_err(),
+            "second slot must be rejected while the first is held"
+        );
+        first.commit();
+        assert!(tracker.acquire_shell_slot("s1").is_ok());
+    }
+
+    #[test]
+    fn test_finish_session_removes_counters() {
+        let tracker = Arc::new(make_tracker_with_limits(100, 1));
+        tracker.check("s1", "shell").unwrap();
+        tracker.finish_session("s1");
+        // After finish_session the session starts fresh — the leaked
+        // counter is gone.
+        assert!(tracker.acquire_shell_slot("s1").is_ok());
     }
 }

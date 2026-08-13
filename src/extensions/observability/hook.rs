@@ -364,4 +364,25 @@ impl AgentHook for ObservabilityHook {
             output_size_bytes: 0,
         });
     }
+
+    fn on_tool_rejected(&self, _session_id: &str, tool_call: &ToolCall, error: &str) {
+        // A later hook rejected this call after our before_tool_call
+        // recorded its start — remove the timing entry so it cannot
+        // linger, count the rejection (this was previously a dead
+        // counter), and emit the trace event.
+        if let Ok(mut ts) = self.tool_starts.lock() {
+            ts.remove(&tool_call.id);
+        }
+        self.tool_rejection_count.fetch_add(1, Ordering::Relaxed);
+        self.store
+            .metrics
+            .total_tool_errors
+            .fetch_add(1, Ordering::Relaxed);
+
+        self.emit(TraceEvent::ToolCallRejected {
+            tool_call_id: tool_call.id.clone(),
+            tool_name: tool_call.function.name.clone(),
+            reason: error.to_string(),
+        });
+    }
 }

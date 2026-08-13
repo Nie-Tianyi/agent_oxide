@@ -106,7 +106,9 @@ pub enum TraceEvent {
 
     /// A tool call was rejected by a hook (e.g., SandboxHook).
     ///
-    /// **Reserved for future use** — currently never emitted by any code path.
+    /// Emitted from [`crate::observability::ObservabilityHook::on_tool_rejected`]
+    /// when a hook *later in the chain* rejects the call — hooks that
+    /// rejected the call themselves audit their own decision.
     ToolCallRejected {
         tool_call_id: String,
         tool_name: String,

@@ -19,6 +19,8 @@ How to upgrade downstream crates from `agent_oxide` 0.5.1 to 0.6.0.
 | Shell approval policy tightened (chained commands prompt; "Deny with reason…" replaces "Other…") | Behavioral | [Shell approval policy tightened](#shell-approval-policy-tightened) |
 | Error types use `thiserror` and preserve source chains (`ProviderError` variant shapes changed) | Yes (match sites) | [Error types carry source chains](#error-types-carry-source-chains) |
 | Lock poisoning degrades gracefully instead of panicking | Behavioral | [Lock poisoning no longer panics](#lock-poisoning-no-longer-panics) |
+| `MacroCompactHook` is `#[non_exhaustive]` (construct via `new`) | Yes (struct literals) | [MacroCompactHook is non-exhaustive](#macrocompacthook-is-non-exhaustive) |
+| Macro-compaction failure no longer drains history (behavioral) | Behavioral | [Macro-compaction failure no longer drains history](#macro-compaction-failure-no-longer-drains-history) |
 
 ---
 
@@ -292,3 +294,38 @@ whole process in hooks. 0.6.0 degrades gracefully:
 Behavioral note for downstream: code that relied on a poisoned lock
 aborting loudly (e.g. `catch_unwind` around `run()`) now sees a
 normal `Err(AgentError::Memory)` instead.
+
+---
+
+## MacroCompactHook is non-exhaustive
+
+`MacroCompactHook` gained internal retry-gate bookkeeping and is now
+`#[non_exhaustive]` — construct it with `MacroCompactHook::new`:
+
+```rust,ignore
+// 0.5.1 — struct literal (allowed)
+let hook = MacroCompactHook {
+    compact_model: "deepseek-chat".into(),
+    threshold: 1_000_000,
+    keep_last_n: 10,
+    client,
+    compaction_failed: AtomicBool::new(false),
+};
+
+// 0.6.0 — struct literals no longer compile; use the constructor.
+// Field access (hook.threshold = …) is unaffected.
+let hook = MacroCompactHook::new("deepseek-chat".into(), 1_000_000, 10, client);
+```
+
+## Macro-compaction failure no longer drains history
+
+In 0.5.1 `MacroCompactHook` drained old messages from memory **before**
+calling the summariser — a failed summarisation (network blip, 5xx)
+permanently destroyed the drained history. 0.6.0 snapshots the
+messages, summarises first, and drains + inserts the summary only on
+success. A failure leaves the conversation fully intact.
+
+Related behavioral change: the retry gate (`compaction_failed` was
+written but never read in 0.5.1) now actually works — after a failure,
+retries are skipped until the context grows beyond the size at which
+it last failed, and `on_run_start` resets the gate.

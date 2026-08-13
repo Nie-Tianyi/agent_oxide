@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Observability hook rejection tracking activated** — `tool_rejection_count`
   is now incremented, `tool_starts` entries are cleaned up on rejection,
   and the previously reserved `TraceEvent::ToolCallRejected` is emitted.
+- **Macro-compaction no longer loses history on summariser failure** —
+  the drain happened *before* the summariser call, so a failed
+  summarisation permanently destroyed the drained messages.  The hook now
+  snapshots the would-be-drained messages, calls the summariser, and only
+  drains + inserts the summary **after a successful summarisation** — a
+  failure leaves the conversation fully intact.
+- **Macro-compaction retry gate actually works** — `compaction_failed`
+  was written but never read, so every subsequent LLM call re-drained and
+  re-called the summariser in a tight loop.  The flag is now read: after
+  a failure, retries are skipped until the context grows beyond the size
+  at which it last failed (`threshold / 10`, min 4096 tokens), and
+  `on_run_start` resets the gate for a fresh conversation.
 - **`WorkspaceFs` TOCTOU re-check false positive on concurrent writes** —
   the `(len, mtime)` identity check ran *before* the per-file write lock,
   so a concurrent in-process write of equal-length content flipped the

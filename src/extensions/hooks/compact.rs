@@ -12,7 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::engine::AgentHook;
 use crate::memory::SharedMemory;
@@ -132,14 +132,19 @@ impl AgentHook for MicroCompactHook {
 ///
 /// Implements [`AgentHook`] — in `on_llm_start`, checks whether the
 /// conversation's `prompt_tokens` (from the previous LLM response, stored
-/// on [`Memory::last_usage`]) exceeds `threshold` tokens.  If it does,
-/// drains old non-System messages (keeping the most recent `keep_last_n`),
-/// calls the compact model for a summary, and inserts it as a System message.
+/// on [`Memory::last_usage`]) exceeds `threshold` tokens.  If it does:
+/// snapshots the messages that would be drained, calls the compact model
+/// for a summary, and **only after a successful summarisation** drains
+/// old non-System messages (keeping the most recent `keep_last_n`) and
+/// inserts the summary as a System message.  A failed summarisation
+/// leaves the history untouched; retries are gated until the context
+/// grows beyond the size at which it last failed.
 ///
 /// The LLM call blocks the agent loop via [`crate::engine::block_on`], which
 /// performs a legal `block_in_place` + `Handle::block_on` on the
 /// multi-threaded runtime.  The agent loop runs in a dedicated tokio task,
 /// separate from the TUI main thread — blocking here does not affect the UI.
+#[non_exhaustive]
 pub struct MacroCompactHook<C: LLMClient> {
     /// Model name for summarisation (cheap model).
     pub compact_model: String,
@@ -150,9 +155,15 @@ pub struct MacroCompactHook<C: LLMClient> {
     pub keep_last_n: usize,
     /// LLM client (same provider, different model).
     pub client: C,
-    /// Set when a summarisation attempt fails — prevents retrying on every
-    /// subsequent LLM call until memory grows further or compaction succeeds.
+    /// Set when a summarisation attempt fails.  The retry gate in
+    /// `on_llm_start` **reads** this flag: after a failure, no further
+    /// attempt is made until the context grows meaningfully beyond the
+    /// size at which it last failed (see `last_failed_tokens`).
     pub compaction_failed: AtomicBool,
+    /// Prompt-token count at the last failed summarisation — the retry
+    /// gate re-attempts once the context exceeds this plus a growth
+    /// margin.
+    last_failed_tokens: AtomicUsize,
 }
 
 impl<C: LLMClient> MacroCompactHook<C> {
@@ -163,52 +174,89 @@ impl<C: LLMClient> MacroCompactHook<C> {
             keep_last_n,
             client,
             compaction_failed: AtomicBool::new(false),
+            last_failed_tokens: AtomicUsize::new(0),
         }
     }
 }
 
 impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
+    /// Reset the retry gate at the start of a fresh run — a new
+    /// conversation deserves a fresh compaction attempt.
+    fn on_run_start(&self, _session_id: &str, _user_input: &str, _memory: &SharedMemory) {
+        self.compaction_failed.store(false, Ordering::Relaxed);
+        self.last_failed_tokens.store(0, Ordering::Relaxed);
+    }
+
     fn on_llm_start(&self, _session_id: &str, memory: &SharedMemory) {
-        let needs = {
+        // ── Trigger check ──────────────────────────────────────────
+        let prompt_tokens = {
             let Ok(mem) = memory.read() else {
                 tracing::error!("memory lock poisoned — skipping macro-compaction");
                 return;
             };
             match &mem.last_usage {
+                Some(usage) if usage.prompt_tokens as usize > self.threshold => usage.prompt_tokens,
                 Some(usage) => {
-                    let triggered = usage.prompt_tokens as usize > self.threshold;
                     tracing::debug!(
                         prompt_tokens = usage.prompt_tokens,
                         threshold = self.threshold,
-                        triggered,
-                        "macro-compaction token check",
+                        "macro-compaction not triggered",
                     );
-                    triggered
+                    return;
                 }
                 None => {
                     // No usage data yet (first LLM call of the session).
                     // Skip compaction — after this call completes,
                     // `last_usage` will be populated for the next check.
                     tracing::debug!("macro-compaction skipped: no usage data yet");
-                    false
+                    return;
                 }
             }
         };
-        if !needs {
-            return;
+
+        // ── Retry gate (after a failed attempt) ─────────────────────
+        // A failed attempt no longer loses any history (see the commit
+        // step below), so this gate is pure cost control: do not burn a
+        // summariser call on EVERY subsequent LLM call — wait until the
+        // context grows meaningfully beyond the size at which it last
+        // failed.
+        if self.compaction_failed.load(Ordering::Relaxed) {
+            let growth = (self.threshold / 10).max(4096);
+            let retry_at = self.last_failed_tokens.load(Ordering::Relaxed) + growth;
+            if prompt_tokens as usize <= retry_at {
+                tracing::debug!(
+                    prompt_tokens,
+                    retry_at,
+                    "macro-compaction skipped: last attempt failed, waiting for context growth"
+                );
+                return;
+            }
         }
 
-        let old = {
-            let Ok(mut mem) = memory.write() else {
+        // ── Snapshot the messages that WOULD be drained ─────────────
+        // Nothing leaves memory yet — if the summariser fails, the
+        // history is untouched.  The drain itself happens in the commit
+        // step, only after a successful summarisation.
+        let old: Vec<Message> = {
+            let Ok(mem) = memory.read() else {
                 tracing::error!("memory lock poisoned — skipping macro-compaction");
                 return;
             };
-            drain_for_compact(&mut mem.messages, self.keep_last_n)
+            let non_system: Vec<&Message> = mem
+                .messages
+                .iter()
+                .filter(|m| m.role != Role::System)
+                .collect();
+            let keep = self.keep_last_n.min(non_system.len());
+            non_system[..non_system.len() - keep]
+                .iter()
+                .map(|m| (*m).clone())
+                .collect()
         };
         tracing::debug!(
-            drained_count = old.len(),
+            snapshot_count = old.len(),
             keep_last_n = self.keep_last_n,
-            "macro-compaction drained old messages",
+            "macro-compaction snapshot taken",
         );
         if old.is_empty() {
             return;
@@ -300,10 +348,8 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
         // because hooks run on a runtime worker thread.
         let result = crate::engine::block_on(self.client.generate(request));
 
-        let summary = match result {
+        match result {
             Ok(resp) => {
-                // Summarisation succeeded — clear the failure flag.
-                self.compaction_failed.store(false, Ordering::Relaxed);
                 let finish_reason = resp.choices.first().and_then(|c| c.finish_reason.clone());
                 let summary = resp
                     .choices
@@ -318,50 +364,76 @@ impl<C: LLMClient> AgentHook for MacroCompactHook<C> {
                     summary_chars = summary.len(),
                     "macro-compaction summariser succeeded",
                 );
-                summary
-            }
-            Err(e) => {
-                // Summarisation failed — log the error and set a flag to
-                // avoid retrying on every subsequent LLM call (which would
-                // burn API calls in a tight loop).
-                if !self.compaction_failed.swap(true, Ordering::Relaxed) {
+                if summary.is_empty() {
+                    // Degenerate model output — treat as failure: leave
+                    // the history untouched and gate the next attempt.
+                    tracing::warn!("macro-compaction produced empty summary — history untouched");
+                    self.compaction_failed.store(true, Ordering::Relaxed);
+                    self.last_failed_tokens
+                        .store(prompt_tokens as usize, Ordering::Relaxed);
+                    return;
+                }
+
+                // Success — clear the retry gate.
+                self.compaction_failed.store(false, Ordering::Relaxed);
+                self.last_failed_tokens.store(0, Ordering::Relaxed);
+
+                // ── Commit: drain + insert under ONE lock hold ───────
+                // Only now — after a successful summarisation — does any
+                // history leave memory.  This is the H1 fix: a failed
+                // summarisation no longer destroys drained messages.
+                let Ok(mut mem) = memory.write() else {
+                    tracing::error!(
+                        "memory lock poisoned — compacted summary could not be inserted"
+                    );
+                    return;
+                };
+                let drained = drain_for_compact(&mut mem.messages, self.keep_last_n);
+                if drained.len() != old.len() {
+                    // The hook runs synchronously on the agent loop, so
+                    // this should not happen unless an external writer
+                    // holds a memory handle — log it rather than guess.
                     tracing::warn!(
-                        error = %e,
-                        "Macro-compaction summarisation failed; will not retry until it succeeds once",
+                        snapshot = old.len(),
+                        drained = drained.len(),
+                        "memory changed between snapshot and commit — summary may cover slightly stale content",
                     );
                 }
-                String::new()
+                // Remove any stale [COMPACT_SUMMARY] message — replaced by
+                // the merged summary below.  Keeps exactly one summary.
+                mem.messages.retain(|m| {
+                    !(m.role == Role::System && m.content.starts_with(COMPACT_SUMMARY_MARKER))
+                });
+                insert_before_history(
+                    &mut mem.messages,
+                    Message::new(
+                        Role::System,
+                        format!("{COMPACT_SUMMARY_MARKER}\n\n{summary}"),
+                    ),
+                );
+                tracing::info!(
+                    drained = drained.len(),
+                    summary_len = summary.len(),
+                    model = %self.compact_model,
+                    total_messages = mem.messages.len(),
+                    "macro-compaction summary inserted as System message",
+                );
             }
-        };
-
-        if !summary.is_empty() {
-            let Ok(mut mem) = memory.write() else {
-                tracing::error!("memory lock poisoned — compacted summary could not be inserted");
-                return;
-            };
-            // Remove any stale [COMPACT_SUMMARY] message — replaced by the
-            // merged summary below.  Keeps exactly one summary in memory.
-            mem.messages.retain(|m| {
-                !(m.role == Role::System && m.content.starts_with(COMPACT_SUMMARY_MARKER))
-            });
-            insert_before_history(
-                &mut mem.messages,
-                Message::new(
-                    Role::System,
-                    format!("{COMPACT_SUMMARY_MARKER}\n\n{summary}"),
-                ),
-            );
-            tracing::info!(
-                summary_len = summary.len(),
-                model = %self.compact_model,
-                total_messages = mem.messages.len(),
-                "macro-compaction summary inserted as System message",
-            );
-        } else {
-            tracing::warn!(
-                drained_count = old.len(),
-                "macro-compaction produced empty summary",
-            );
+            Err(e) => {
+                // Nothing was drained — the history is fully intact.
+                // Record the failure and gate retries until the context
+                // grows (see the retry gate above).
+                let first_failure = !self.compaction_failed.swap(true, Ordering::Relaxed);
+                self.last_failed_tokens
+                    .store(prompt_tokens as usize, Ordering::Relaxed);
+                if first_failure {
+                    tracing::warn!(
+                        error = %e,
+                        prompt_tokens,
+                        "Macro-compaction summarisation failed — history untouched; will retry once the context grows",
+                    );
+                }
+            }
         }
     }
 }
@@ -1166,6 +1238,134 @@ mod tests {
             summary_count(&mem),
             1,
             "old summary must survive a failed re-compaction"
+        );
+    }
+
+    #[test]
+    fn test_macro_compact_failure_keeps_history_intact() {
+        // The H1 regression anchor: before the summarise-first redesign,
+        // the drain happened BEFORE the summariser call, so a failed
+        // summarisation permanently destroyed every drained message.
+        struct FailingClient;
+        impl LLMClient for FailingClient {
+            async fn generate(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, ProviderError> {
+                Err(ProviderError::http_message("summariser down"))
+            }
+            async fn stream(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<
+                futures_util::stream::BoxStream<
+                    'static,
+                    Result<crate::provider::StreamChunk, ProviderError>,
+                >,
+                ProviderError,
+            > {
+                panic!("FailingClient::stream should not be called");
+            }
+        }
+
+        let hook: MacroCompactHook<FailingClient> =
+            MacroCompactHook::new("test-model".into(), 10, 2, FailingClient);
+        let mem = make_memory_with_history(6);
+        let before = mem.read().expect("memory lock poisoned").messages.len();
+
+        hook.on_llm_start("test", &mem);
+
+        let m = mem.read().expect("memory lock poisoned");
+        assert_eq!(
+            m.messages.len(),
+            before,
+            "no message may be lost when the summariser fails"
+        );
+        assert_eq!(summary_count(&mem), 0, "no summary on failure");
+        assert!(
+            m.messages.iter().any(|msg| msg.content == "user message 0"),
+            "the oldest message must survive a failed compaction"
+        );
+    }
+
+    #[test]
+    fn test_macro_compact_retry_gate_waits_for_growth() {
+        // After a failed attempt, further calls at the same context size
+        // must NOT re-invoke the summariser; once the context grows past
+        // the gate, the next attempt is allowed; a fresh run resets the
+        // gate.
+        struct CountingFailingClient {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+        impl LLMClient for CountingFailingClient {
+            async fn generate(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<CompletionResponse, ProviderError> {
+                use std::sync::atomic::Ordering;
+                self.calls.fetch_add(1, Ordering::Relaxed);
+                Err(ProviderError::http_message("summariser down"))
+            }
+            async fn stream(
+                &self,
+                _req: CompletionRequest,
+            ) -> Result<
+                futures_util::stream::BoxStream<
+                    'static,
+                    Result<crate::provider::StreamChunk, ProviderError>,
+                >,
+                ProviderError,
+            > {
+                panic!("CountingFailingClient::stream should not be called");
+            }
+        }
+
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook: MacroCompactHook<CountingFailingClient> = MacroCompactHook::new(
+            "test-model".into(),
+            10,
+            2,
+            CountingFailingClient {
+                calls: Arc::clone(&calls),
+            },
+        );
+        // make_memory_with_history sets last_usage to 5000 prompt tokens.
+        let mem = make_memory_with_history(6);
+
+        // First attempt: gate open → summariser called, fails.
+        hook.on_llm_start("test", &mem);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+        // Same context size → gate blocks the retry.
+        hook.on_llm_start("test", &mem);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "retry gate must block same-size retries"
+        );
+
+        // Context grows past failed_at + growth (5000 + 4096) → gate opens.
+        mem.write().expect("memory lock poisoned").last_usage = Some(Usage {
+            prompt_tokens: 9100,
+            completion_tokens: 10,
+            total_tokens: 9110,
+        });
+        hook.on_llm_start("test", &mem);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            2,
+            "retry gate must open after meaningful context growth"
+        );
+
+        // A fresh run resets the gate.
+        hook.on_run_start("test", "new input", &mem);
+        hook.on_llm_start("test", &mem);
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            3,
+            "on_run_start must reset the retry gate"
         );
     }
 }

@@ -187,7 +187,10 @@ impl Default for ShellConfig {
         Self {
             default_timeout_secs: 30,
             max_timeout_secs: 120,
-            max_output_bytes: 100_000,
+            // Single source of truth: [`encoding::MAX_OUTPUT_BYTES`] is
+            // the canonical output cap; the config default refers to it
+            // instead of repeating the literal.
+            max_output_bytes: super::encoding::MAX_OUTPUT_BYTES,
             sanitize_environment: true,
             auto_approve: AutoApproveConfig::default(),
             deny_patterns: DenyPatternsConfig::default(),
@@ -358,6 +361,16 @@ mod tests {
                 .all(|p| !p.trim().is_empty() && std::path::Path::new(p).is_absolute()),
             "got: {:?}",
             cfg.read_only_paths
+        );
+    }
+
+    #[test]
+    fn test_shell_max_output_bytes_matches_encoding_constant() {
+        // Single source of truth — the config default and the encoding
+        // constant must never drift apart.
+        assert_eq!(
+            ShellConfig::default().max_output_bytes,
+            crate::extensions::sandbox::encoding::MAX_OUTPUT_BYTES,
         );
     }
 }

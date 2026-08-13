@@ -14,6 +14,8 @@ How to upgrade downstream crates from `agent_oxide` 0.5.1 to 0.6.0.
 | `PersistenceHook` generic over the LLM provider | Yes | [PersistenceHook is now generic](#persistencehook-is-now-generic) |
 | `PersistenceHook::new` parameter `flash_model` → `title_model` | No (positional) | [flash_model renamed](#flash_model-renamed) |
 | `DEFAULT_MODEL` moved to the `deepseek` module | No | [DEFAULT_MODEL relocation](#default_model-relocation) |
+| Sandbox execution layers ship in-library (`ShellTool` + `ShellRunner`) | No (recommended migration) | [Sandbox execution layers](#sandbox-execution-layers) |
+| Env sanitizer no longer passes `PYTHONPATH` / `NODE_PATH` / `RUSTC_WRAPPER` | Behavioral | [Env sanitizer narrowed](#env-sanitizer-narrowed) |
 
 ---
 
@@ -118,3 +120,76 @@ re-export. Two recommendations for downstream crates:
 2. If you reference `DEFAULT_MODEL` directly, switch to the
    `agent_oxide::deepseek::` path so the re-export can eventually be
    removed.
+
+---
+
+## Sandbox execution layers
+
+In 0.5.1 the sandbox's execution layers — env sanitization, the
+watchdog, output decoding/truncation — had **zero call sites in the
+library**. Downstream crates hand-wired them inside their own shell
+tool. 0.6.0 ships the full chain composed as `ShellTool` +
+`ShellRunner`, so downstream code shrinks to registering the library
+tool:
+
+```rust,ignore
+// 0.5.1 — hand-rolled shell tool wiring (downstream)
+impl Tool for MyShellTool {
+    fn execute_stream(&self, args: &str) -> Result<ProgressStream, ToolError> {
+        let command = parse(args)?;
+        let mut cmd = Command::new(if cfg!(windows) { "cmd" } else { "sh" });
+        cmd.current_dir(&workspace);
+        sanitize(&mut cmd, &workspace, config.sanitize_environment); // layer 4
+        let child = cmd.spawn()?;
+        let watchdog = Watchdog::spawn(child.id(), timeout);          // layer 5
+        let output = child.wait_with_output()?;
+        watchdog.disarm();
+        let text = truncate_output(&decode_stdout(&output.stdout), MAX_OUTPUT_BYTES);
+        Ok(ProgressStream::done(text))
+    }
+}
+
+// 0.6.0 — register the library tool; the full chain comes with it
+let agent = Agent::builder(client, model)
+    .tool(ShellTool::from_config(workspace_root, &sandbox_config))
+    .hook(SandboxHook::new(...)) // approval layer, unchanged
+    .build();
+```
+
+What the library chain now covers, enforced in one place:
+
+- **Second-pass policy check** — `ShellTool` re-runs `ShellFilter`
+  before execution (sandbox check #13). Default mode is
+  `ToolApprovalMode::BlockOnly` (correct when `SandboxHook` is in the
+  hook chain — the hook already prompted for `RequiresApproval`
+  commands). Deployments using `ShellTool` **without** `SandboxHook`
+  must use `ToolApprovalMode::DenyUnapproved`, which also refuses
+  `RequiresApproval` commands.
+- **Env sanitization + timeout tree-kill + bounded capture** —
+  `ShellRunner` spawns `cmd /D /S /C` (AutoRun registry hook disabled)
+  or `sh -c` in its own process group, and caps stdout/stderr **at read
+  time** (overflow kills the tree — no more multi-GB buffering before
+  truncation).
+
+For user-initiated `!command` execution (not via the `Tool` trait),
+`ShellRunner::run` is the direct, blocking API — it is deliberately
+policy-free, so run your own `ShellFilter::classify` on the command
+first.
+
+New exports: `agent_oxide::sandbox::{ShellTool, ShellRunner,
+ShellOutput, ShellRunnerError, ToolApprovalMode}`.
+
+## Env sanitizer narrowed
+
+The sanitized-environment allowlist no longer passes `PYTHONPATH`,
+`NODE_PATH`, or `RUSTC_WRAPPER` to child processes — all three load
+code on interpreter/compiler startup and are classic injection
+vectors.
+
+**Behavioral change:** if your harness relied on `PYTHONPATH` /
+`NODE_PATH` reaching sandboxed `python` / `node` invocations (e.g.
+project-local packages), those imports stop resolving. The supported
+alternative is `workspace_root/bin`, which the sanitizer already
+prepends to `PATH` — put wrappers there, or relax the allowlist in
+your own copy of the policy. `GOPATH`, `JAVA_HOME`,
+`NPM_CONFIG_USERCONFIG`, and `CARGO_HOME` remain allowed.

@@ -56,8 +56,21 @@ Code: [`src/extensions/sandbox/fs.rs`](../src/extensions/sandbox/fs.rs)
 
 Code:
 
-- ShellTool: [`src/extensions/sandbox/shell_filter.rs`](../src/extensions/sandbox/shell_filter.rs) (the shell tool itself is not part of this crate; the TUI app implements it on top of ShellFilter)
+- ShellTool: [`src/extensions/sandbox/shell_tool.rs`](../src/extensions/sandbox/shell_tool.rs) — the in-library `shell` tool; downstream crates register it instead of hand-wiring the execution chain
+- ShellRunner: [`src/extensions/sandbox/shell_runner.rs`](../src/extensions/sandbox/shell_runner.rs) — composed execution chain: env sanitize → tree watchdog → bounded capture → decode/truncate
 - EnvSanitizer: [`src/extensions/sandbox/env_sanitizer.rs`](../src/extensions/sandbox/env_sanitizer.rs)
+
+```text
+ShellTool.execute_stream
+  ├─ strict arg parse (fail closed on malformed JSON)
+  ├─ second-pass ShellFilter.classify   ← check #13
+  └─ background thread → ShellRunner.run
+       ├─ cmd /D /S /C <cmd> (AutoRun disabled) | sh -c <cmd> (own process group)
+       ├─ env sanitize                  ← check #14
+       ├─ Watchdog::spawn_tree          ← check #15 (timeout kill)
+       ├─ bounded stdout/stderr capture ← check #16 (budget kill, no unbounded reads)
+       └─ decode + truncate
+```
 
 ---
 
@@ -90,10 +103,13 @@ A tool call initiated by the LLM must pass **all** of the following checks befor
 | 10 | `WorkspaceFs::write` | Extension not on the blocklist | ExtensionBlocked |
 | 11 | `WorkspaceFs::write` | No NUL bytes in content | BinaryContentDetected |
 | 12 | `WorkspaceFs::write` | Not a hidden file (starts with `.`) | HiddenFileBlocked |
-| 13 | `ShellFilter` (second pass) | Re-classified before ShellTool executes | ToolError::Execution |
-| 14 | `EnvSanitizer` | Environment sanitization | (does not fail, but limits the attack surface) |
-| 15 | `Watchdog` | Process killed on timeout | Process terminated |
-| 16 | Output truncation | stdout + stderr ≤ 100KB | Truncated and marked |
+| 13 | `ShellFilter` (second pass, in `ShellTool`) | Re-classified before execution | ToolError::Execution |
+| 14 | `EnvSanitizer` (in `ShellRunner`) | Environment sanitization (`cmd /D` also disables the AutoRun registry hook) | (does not fail, but limits the attack surface) |
+| 15 | `Watchdog::spawn_tree` (in `ShellRunner`) | Process **tree** killed on timeout (Unix: process group) | Process terminated |
+| 16 | Bounded capture + truncation (in `ShellRunner`) | stdout + stderr are capped **at read time** (budget exceeded → tree killed), then truncated | Truncated and marked |
+
+Checks 13–16 are now enforced **in-library** by `ShellTool` / `ShellRunner` —
+registering `ShellTool` wires them automatically; no downstream hand-wiring.
 
 Checks 3–5 are controlled by `.agent/config.toml`:
 
@@ -116,10 +132,10 @@ patterns = ["rm -rf\\s+(/|~)", "sudo\\s+", "shutdown", ...]
 
 2. **Fail closed** — any check failure blocks execution. When configuration is missing, the strictest safe defaults are used.
 
-3. **Defense in depth** — ShellFilter runs once in the hook layer (`before_tool_call`) and once in the ShellTool layer (`execute`), acting as backups for each other.
+3. **Defense in depth** — ShellFilter runs once in the hook layer (`before_tool_call`) and once in the ShellTool layer (`execute`), acting as backups for each other. The tool-layer pass defaults to `ToolApprovalMode::BlockOnly` (only `Blocked` verdicts are refused — the hook already prompted for `RequiresApproval` commands); deployments that register `ShellTool` **without** `SandboxHook` must use `ToolApprovalMode::DenyUnapproved`, which also refuses `RequiresApproval` commands.
 
 4. **Full-chain auditing** — from classification → decision → execution → result, every step is recorded to `.agent/audit.jsonl` for later traceability.
 
-5. **Synchronous execution** — `Tool::execute` and `AgentHook` methods are synchronous. Shell commands block the tokio worker thread until completion (or timeout). This is acceptable for short commands (<30s); long-term this can migrate to `spawn_blocking`.
+5. **Non-blocking execution** — `Tool::execute` and `AgentHook` methods are synchronous, but `ShellTool` runs the command on a background thread and streams progress over a channel (same pattern as `SubagentTool`) — the tokio worker driving the tool loop stays free, and `InProgress` events reach the TUI live. `ShellRunner::run` itself is a blocking, synchronous API for callers who want direct use (e.g. user `!command` execution).
 
 6. **Configuration as policy** — the behavior of every security check is not hardcoded but driven by `SandboxConfig`. Users can tune the security level through `.agent/config.toml`.

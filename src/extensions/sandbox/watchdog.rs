@@ -1,13 +1,24 @@
 //! Process watchdog — kills a child process (by PID) if it exceeds a
 //! timeout.
 //!
-//! Shared between `ShellTool` and user `!command` execution in downstream
-//! crates (e.g. your binary).
+//! Shared between the in-library [`crate::sandbox::ShellRunner`] and user
+//! `!command` execution in downstream crates (e.g. your binary).
 
 use std::process::Command;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// What the watchdog kills when it fires.
+#[derive(Debug, Clone, Copy)]
+enum KillScope {
+    /// Kill only the process identified by `pid`.
+    Process,
+    /// Kill the process tree — on Unix the process *group* (`kill -9 -- -<pid>`,
+    /// requires the child to be spawned with `CommandExt::process_group(0)`);
+    /// on Windows `taskkill /F /T` already kills the tree in both scopes.
+    Tree,
+}
 
 /// A watchdog thread that kills a process (by PID) if it exceeds a timeout.
 ///
@@ -18,10 +29,10 @@ use std::time::{Duration, Instant};
 ///
 /// # Platform behaviour
 ///
-/// | OS | Kill command |
-/// |----|-------------|
-/// | Windows | `taskkill /F /T /PID <pid>` (tree kill) |
-/// | Unix | `kill -9 <pid>` |
+/// | OS | `spawn` | `spawn_tree` |
+/// |----|---------|--------------|
+/// | Windows | `taskkill /F /T /PID <pid>` | `taskkill /F /T /PID <pid>` |
+/// | Unix | `kill -9 <pid>` | `kill -9 -- -<pid>` (process group) |
 ///
 /// # Example
 ///
@@ -35,6 +46,11 @@ pub struct Watchdog {
     /// Shared flag — set to `true` by `disarm()` to signal the watchdog
     /// thread that the process finished normally.
     done: Arc<AtomicBool>,
+    /// Set to `true` when the watchdog fires (the kill command is issued).
+    /// Read it **before** [`disarm()`](Self::disarm) to learn whether the
+    /// process was killed — a far more reliable signal than comparing
+    /// elapsed time against the timeout.
+    fired: Arc<AtomicBool>,
     /// The watchdog thread handle. `None` only during the `disarm` drop.
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -47,8 +63,25 @@ impl Watchdog {
     /// The kill is best-effort — if the PID is invalid (process already
     /// exited), the kill command is a no-op.
     pub fn spawn(pid: u32, timeout: Duration) -> Self {
+        Self::spawn_impl(pid, timeout, KillScope::Process)
+    }
+
+    /// Spawn a watchdog that kills the **process tree** on timeout.
+    ///
+    /// Unix: kills the process group (`kill -9 -- -<pid>`) — the child
+    /// must have been spawned with `CommandExt::process_group(0)` so its
+    /// pgid equals its pid and background grandchildren inherit it.
+    /// Windows: identical to [`spawn`](Self::spawn) (`taskkill /F /T`
+    /// already kills the tree).
+    pub fn spawn_tree(pid: u32, timeout: Duration) -> Self {
+        Self::spawn_impl(pid, timeout, KillScope::Tree)
+    }
+
+    fn spawn_impl(pid: u32, timeout: Duration, scope: KillScope) -> Self {
         let done = Arc::new(AtomicBool::new(false));
+        let fired = Arc::new(AtomicBool::new(false));
         let done_signal = Arc::clone(&done);
+        let fired_signal = Arc::clone(&fired);
 
         let thread = std::thread::spawn(move || {
             let deadline = Instant::now() + timeout;
@@ -59,41 +92,32 @@ impl Watchdog {
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
-            // Timeout reached — best-effort kill.
+            // Timeout reached — mark fired, then best-effort kill.
+            // Fired is set *before* the kill so `fired()` reports true
+            // even if the kill command itself fails to spawn.
+            fired_signal.store(true, Ordering::Relaxed);
             tracing::warn!(
                 pid,
+                scope = ?scope,
                 timeout_secs = timeout.as_secs(),
                 "Watchdog timeout reached — killing process"
             );
-            #[cfg(target_os = "windows")]
-            {
-                // /T = tree kill (child processes too)
-                if let Err(e) = Command::new("taskkill")
-                    .args(["/F", "/T", "/PID", &pid.to_string()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    tracing::error!(pid, error = %e, "Failed to spawn taskkill for watchdog kill");
-                }
-            }
-            #[cfg(not(target_os = "windows"))]
-            {
-                if let Err(e) = Command::new("kill")
-                    .args(["-9", &pid.to_string()])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    tracing::error!(pid, error = %e, "Failed to spawn kill for watchdog kill");
-                }
-            }
+            kill_by_scope(pid, scope);
         });
 
         Self {
             done,
+            fired,
             thread: Some(thread),
         }
+    }
+
+    /// Whether the watchdog fired — i.e. issued its kill command.
+    ///
+    /// Meaningful only while the watchdog is still armed: read this
+    /// **before** calling [`disarm()`](Self::disarm).
+    pub fn fired(&self) -> bool {
+        self.fired.load(Ordering::Relaxed)
     }
 
     /// Signal that the process finished normally and wait for the watchdog
@@ -126,6 +150,49 @@ impl Drop for Watchdog {
         self.done.store(true, Ordering::Relaxed);
         if let Some(handle) = self.thread.take() {
             let _ = handle.join();
+        }
+    }
+}
+
+// ── Kill helpers ─────────────────────────────────────────────────────────────
+
+/// Kill the **process tree** for `pid` — best-effort, idempotent, silent
+/// on failure (the process may already be gone).
+///
+/// Shared by the watchdog and [`crate::sandbox::ShellRunner`] (which
+/// kills the tree early when a command floods the output budget).
+pub(crate) fn kill_tree(pid: u32) {
+    kill_by_scope(pid, KillScope::Tree);
+}
+
+fn kill_by_scope(pid: u32, scope: KillScope) {
+    #[cfg(target_os = "windows")]
+    {
+        // /T = tree kill (child processes too) — covers both scopes.
+        if let Err(e) = Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            tracing::error!(pid, scope = ?scope, error = %e, "Failed to spawn taskkill for watchdog kill");
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        // Negative PID (after `--`) targets the process *group* — the
+        // child must share its pgid with the processes to be killed.
+        let target = match scope {
+            KillScope::Process => pid.to_string(),
+            KillScope::Tree => format!("-{pid}"),
+        };
+        if let Err(e) = Command::new("kill")
+            .args(["-9", "--", &target])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            tracing::error!(pid, scope = ?scope, error = %e, "Failed to spawn kill for watchdog kill");
         }
     }
 }
@@ -176,6 +243,32 @@ mod tests {
         let watchdog = Watchdog::spawn(99999, Duration::from_millis(10));
         std::thread::sleep(Duration::from_millis(100));
         // Disarming after the watchdog has already returned should be fine.
+        watchdog.disarm();
+    }
+
+    #[test]
+    fn test_fired_false_when_disarmed_before_timeout() {
+        let watchdog = Watchdog::spawn(99999, Duration::from_secs(3600));
+        assert!(!watchdog.fired(), "watchdog must not have fired");
+        watchdog.disarm();
+    }
+
+    #[test]
+    fn test_fired_true_after_timeout() {
+        let watchdog = Watchdog::spawn(99999, Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(300));
+        // The watchdog fired (the kill was a no-op for a nonexistent PID,
+        // but the fired flag must be set).
+        assert!(watchdog.fired(), "watchdog should have fired after timeout");
+        watchdog.disarm();
+    }
+
+    #[test]
+    fn test_spawn_tree_fires_without_panic() {
+        // Smoke test — tree kill of a nonexistent PID must not panic.
+        let watchdog = Watchdog::spawn_tree(99999, Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(watchdog.fired());
         watchdog.disarm();
     }
 }

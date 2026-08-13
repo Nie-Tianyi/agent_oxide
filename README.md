@@ -188,7 +188,8 @@ impl EchoTool {
   `AgentEvent`s power real-time UIs.
 - **Sandbox** — 5-layer defense: path sandboxing (`WorkspaceFs`), command
   classification (`ShellFilter`), quota orchestration (`SandboxHook`),
-  environment sanitization, and a process watchdog.
+  environment sanitization, and a process watchdog — the execution
+  layers ship wired as the in-library `ShellTool` / `ShellRunner`.
 - **Compaction** — two-tier memory management: micro-compaction clears
   stale tool outputs in place; macro-compaction summarises old messages
   via a cheap model when token usage exceeds a threshold.
@@ -225,7 +226,7 @@ agent_oxide/
 │       ├── persistence/    # Conversation persistence — save/load threads, PersistenceHook
 │       ├── subagent/       # SubagentTool — spawn child agents as tools
 │       ├── observability/  # TraceEvent, TraceStore, RunMetrics — full-chain tracing
-│       ├── sandbox/        # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, etc.
+│       ├── sandbox/        # Sandbox runtime — WorkspaceFs, ShellFilter, SandboxHook, ShellTool, ShellRunner
 │       └── agent_kit/      # NOOA — NVIDIA OO Agents-style ergonomics
 ├── examples/               # NOOA examples: feedback / inventory / note-taking agents
 └── docs/
@@ -372,9 +373,16 @@ Key constants in `src/extensions/hooks/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT
 | 4 | `EnvSanitizer` | Clears dangerous env vars before spawning child processes |
 | 5 | Watchdog | Kills process tree on timeout (`taskkill /F /T` on Windows) |
 
+Layers 4–5 plus bounded output capture and the second-pass policy check
+are composed into the in-library `ShellTool` / `ShellRunner` — register
+`ShellTool` to get the full chain without hand-wiring. Use
+`ToolApprovalMode::DenyUnapproved` when `ShellTool` runs without
+`SandboxHook` in the hook chain.
+
 Config: `SandboxConfig::load(path)` — path provided by the caller; safe
-defaults if the file is missing. Shell output is capped at **100 KB**.
-Default audit log path: `.agent/audit.jsonl` (relative to workspace root).
+defaults if the file is missing. Shell output is capped at **100 KB**
+(enforced at read time). Default audit log path: `.agent/audit.jsonl`
+(relative to workspace root).
 
 #### Observability (full-chain tracing)
 

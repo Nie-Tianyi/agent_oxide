@@ -3,7 +3,10 @@
 //! When `sanitize_environment` is enabled, we clear all environment
 //! variables and only pass a known-safe allowlist.  This prevents
 //! leaking secrets (`DEEPSEEK_API`, etc.) and neutralises
-//! injection vectors like `LD_PRELOAD`.
+//! injection vectors like `LD_PRELOAD`.  Code-loading path variables
+//! (`PYTHONPATH`, `NODE_PATH`, `RUSTC_WRAPPER`) are deliberately
+//! excluded from the allowlist — they execute code on import; project
+//! tooling should go through `workspace_root/bin` on `PATH` instead.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -14,7 +17,7 @@ use std::process::Command;
 /// When `enabled` is true:
 /// - All variables are cleared.
 /// - Only the safe allowlist below is restored.
-/// - `LD_PRELOAD` and friends are explicitly removed.
+/// - `LD_PRELOAD` and other code-loading vectors are excluded.
 /// - `workspace_root/bin` is prepended to `PATH`.
 pub fn sanitize(cmd: &mut Command, workspace_root: &Path, enabled: bool) {
     if !enabled {
@@ -94,13 +97,13 @@ pub fn collect_safe_vars() -> std::collections::HashMap<String, String> {
         "USERPROFILE",
         "HOMEDRIVE",
         "HOMEPATH",
-        // Dev tooling
+        // Dev tooling.
+        // NOTE: PYTHONPATH / NODE_PATH / RUSTC_WRAPPER are intentionally
+        // NOT here — they load code on interpreter/compiler startup and
+        // are classic injection vectors (see module docs).
         "CARGO_HOME",
         "RUSTUP_HOME",
-        "RUSTC_WRAPPER",
         "NPM_CONFIG_USERCONFIG",
-        "NODE_PATH",
-        "PYTHONPATH",
         "GOPATH",
         "JAVA_HOME",
         // Terminal / display
@@ -175,6 +178,19 @@ mod tests {
             !vars.contains_key("OPENAI_API_KEY"),
             "OPENAI_API_KEY must not be in safe vars"
         );
+    }
+
+    #[test]
+    fn test_collect_safe_vars_excludes_code_loading_paths() {
+        let vars = collect_safe_vars();
+        // Code-loading path variables execute code on import — they must
+        // never reach sandboxed child processes.
+        for key in ["PYTHONPATH", "NODE_PATH", "RUSTC_WRAPPER"] {
+            assert!(
+                !vars.contains_key(key),
+                "{key} is a code-loading vector and must not be in safe vars"
+            );
+        }
     }
 
     #[test]

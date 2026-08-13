@@ -30,6 +30,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   used when no `#[agent(model)]` field is present; `agent_kit` re-exports
   it for backwards compatibility instead of defining a vendor constant
   in the generic layer.
+- **Env sanitizer allowlist narrowed** — `PYTHONPATH`, `NODE_PATH`, and
+  `RUSTC_WRAPPER` (code-loading injection vectors) are no longer passed
+  to sandboxed child processes.
+- **`ShellConfig::max_output_bytes` single-sourced** — the config default
+  now references `encoding::MAX_OUTPUT_BYTES` instead of repeating the
+  literal.
+- **`Watchdog` gains `spawn_tree` + `fired`** — tree kill on Unix now
+  targets the process group (requires `process_group(0)` in the caller);
+  the `fired()` flag replaces elapsed-time heuristics for detecting
+  watchdog kills.  Existing `spawn` semantics unchanged.
 
 Breaking changes above are documented with before/after code in
 [docs/migration-guide-0.5.1-to-0.6.0.md](docs/migration-guide-0.5.1-to-0.6.0.md)
@@ -37,6 +47,13 @@ Breaking changes above are documented with before/after code in
 
 ### Added
 
+- **`ShellRunner` + `ShellTool`** — the sandbox execution layers
+  (env sanitization, tree watchdog kill, bounded output capture,
+  decode/truncation) and the second-pass policy check now ship as
+  in-library components; sandbox checks 13–16 are enforced by registering
+  `ShellTool` instead of a hand-rolled shell tool.  `ToolApprovalMode`
+  (`BlockOnly` default / `DenyUnapproved` for hook-less deployments)
+  controls the second-pass semantics.
 - **Umbrella crate** — `agent_oxide` re-exports the whole framework under
   one name (`use agent_oxide::prelude::*`), with a convenience prelude.
 - **`provider`** — `LLMClient` trait (Rust 2024 native async fn, no

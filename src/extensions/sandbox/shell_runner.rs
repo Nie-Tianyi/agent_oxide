@@ -414,7 +414,11 @@ mod tests {
             tmp.path().join("probe.txt").display()
         );
         let out = make_runner(&tmp).run(&command, None).unwrap();
-        assert!(out.stdout.contains("alpha beta"), "stdout: {:?}", out.stdout);
+        assert!(
+            out.stdout.contains("alpha beta"),
+            "stdout: {:?}",
+            out.stdout
+        );
     }
 
     /// Regression: inner quotes must be preserved, not escaped into
@@ -423,8 +427,15 @@ mod tests {
     #[test]
     fn quoted_echo_preserves_inner_quotes() {
         let tmp = tempfile::tempdir().unwrap();
-        let out = make_runner(&tmp).run(r#"echo "hello world""#, None).unwrap();
-        assert_eq!(out.stdout.trim(), r#""hello world""#, "stdout: {:?}", out.stdout);
+        let out = make_runner(&tmp)
+            .run(r#"echo "hello world""#, None)
+            .unwrap();
+        assert_eq!(
+            out.stdout.trim(),
+            r#""hello world""#,
+            "stdout: {:?}",
+            out.stdout
+        );
         assert!(
             !out.stdout.contains("\\\""),
             "backslash-quote escaping must not leak to cmd: {:?}",

@@ -134,9 +134,15 @@ impl WorkspaceFs {
             .clone()
     }
 
-    /// Resolve a path (write-mode): must stay within the workspace.
-    fn resolve(&self, path: &str) -> Result<PathBuf, FsError> {
-        self.resolve_within(path, &[&self.workspace_root])
+    /// Resolve a path (write-mode) and take the per-file write lock.
+    ///
+    /// Returns the resolved path plus the file's lock.  The caller must
+    /// lock it and then run [`recheck_identity`](Self::recheck_identity)
+    /// **under the lock** — see that method for why the ordering matters.
+    fn resolve_for_write(&self, path: &str) -> Result<(PathBuf, Arc<Mutex<()>>), FsError> {
+        let resolved = self.resolve_path(path, &[&self.workspace_root])?;
+        let lock = self.file_lock(&resolved);
+        Ok((resolved, lock))
     }
 
     /// Resolve a path (read-mode): may be within the workspace **or** any
@@ -152,8 +158,9 @@ impl WorkspaceFs {
     /// Resolve a relative path to an absolute path within one of `roots`.
     ///
     /// On success the returned path is guaranteed to start with one of the
-    /// allowed roots.  When the resolved path already exists on disk
-    /// we also perform a **TOCTOU re-check** (see below).
+    /// allowed roots.  For existing paths the TOCTOU re-check
+    /// ([`recheck_identity`](Self::recheck_identity)) runs afterwards —
+    /// read paths accept the (rare) false positive described there.
     ///
     /// ## Known limitations
     ///
@@ -168,6 +175,14 @@ impl WorkspaceFs {
     /// A truly race-free design would require handle-based I/O (open
     /// file, then `fstat` the handle).
     fn resolve_within(&self, path: &str, roots: &[&Path]) -> Result<PathBuf, FsError> {
+        let normalized = self.resolve_path(path, roots)?;
+        self.recheck_identity(&normalized, roots)?;
+        Ok(normalized)
+    }
+
+    /// Pure path resolution — canonicalize + sandbox-root check, no
+    /// identity re-check.
+    fn resolve_path(&self, path: &str, roots: &[&Path]) -> Result<PathBuf, FsError> {
         let joined = if path.is_empty() {
             self.workspace_root.clone()
         } else {
@@ -188,20 +203,35 @@ impl WorkspaceFs {
             )));
         }
 
-        // ── TOCTOU re-check for existing paths ──────────────────────────
-        // Re-canonicalize and verify the file identity hasn't changed.
-        // We compare file length + modification time as a heuristic for
-        // "same file" — this is NOT an inode/file-index comparison, and
-        // can be defeated by a determined attacker with write access.
-        // If the path didn't exist at the first canonicalize (normalize_partial
-        // path), this re-check is skipped — new files are not covered.
+        Ok(normalized)
+    }
+
+    /// TOCTOU identity re-check for an existing resolved path.
+    ///
+    /// Re-canonicalizes and verifies the file identity hasn't changed.
+    /// We compare file length + modification time as a heuristic for
+    /// "same file" — this is NOT an inode/file-index comparison, and
+    /// can be defeated by a determined attacker with write access.
+    ///
+    /// **Mutating callers (`write`, `edit_lines`, `edit_content`) must
+    /// hold the per-file lock while this runs.**  The check straddles two
+    /// `metadata()` calls; a concurrent in-process write of equal-length
+    /// content flips the mtime between them and would be misreported as
+    /// a symlink swap (the framework's own operations are not attackers).
+    /// Under the lock, in-process operations serialize before the check;
+    /// external swaps are still detected.
+    ///
+    /// If the path didn't exist at the first canonicalize
+    /// (`normalize_partial` path), this re-check is skipped — new files
+    /// are not covered.
+    fn recheck_identity(&self, normalized: &Path, roots: &[&Path]) -> Result<(), FsError> {
         if let Ok(meta) = normalized.metadata() {
             let re_canon = normalized.canonicalize().map_err(FsError::Io)?;
             if !roots.iter().any(|root| re_canon.starts_with(root)) {
-                tracing::error!(path = %path, "TOCTOU re-check failed: path escapes sandbox roots");
+                tracing::error!(path = %normalized.display(), "TOCTOU re-check failed: path escapes sandbox roots");
                 return Err(FsError::WorkspaceEscape(format!(
                     "'{}' escapes workspace (TOCTOU re-check)",
-                    path
+                    normalized.display()
                 )));
             }
             // Compare file identity: same length + same modification time
@@ -211,17 +241,17 @@ impl WorkspaceFs {
                 && (meta.len() != re_meta.len() || meta.modified().ok() != re_meta.modified().ok())
             {
                 tracing::error!(
-                    path = %path,
+                    path = %normalized.display(),
                     "TOCTOU re-check failed: file identity changed between checks — possible symlink swap"
                 );
                 return Err(FsError::WorkspaceEscape(format!(
                     "'{}' file identity changed between checks — possible symlink swap",
-                    path
+                    normalized.display()
                 )));
             }
         }
 
-        Ok(normalized)
+        Ok(())
     }
 
     /// Read file content with optional `offset` (1-indexed line) and `limit`.
@@ -289,11 +319,14 @@ impl WorkspaceFs {
     /// Enforces content size limits, extension blocklist, hidden-file
     /// protection, and binary-content detection (null-byte heuristic).
     ///
-    /// **TOCTOU note**: There is a window between [`resolve`](Self::resolve)
-    /// and the actual `fs::write` call. A symlink-swap in that window can
-    /// bypass the path sandbox. See [`resolve`](Self::resolve) for details.
+    /// **TOCTOU note**: The identity re-check runs under the per-file
+    /// lock and the lock is held across the actual `fs::write`, so
+    /// concurrent in-process operations serialize cleanly.  A
+    /// symlink-swap by an *external* attacker between the re-check and
+    /// the open remains possible — see [`recheck_identity`] for the
+    /// known limitations.
     pub fn write(&self, path: &str, content: &str) -> Result<(), FsError> {
-        let resolved = self.resolve(path)?;
+        let (resolved, lock) = self.resolve_for_write(path)?;
 
         // ── Content size limit ──────────────────────────────────────────
         if content.len() > self.max_write_bytes {
@@ -347,8 +380,13 @@ impl WorkspaceFs {
         // pre-write state and write back stale content, silently wiping
         // this write (or vice versa). The lock makes overlapping
         // operations apply in a clean order.
-        let lock = self.file_lock(&resolved);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Identity re-check under the per-file lock — a concurrent
+        // in-process write of equal-length content would otherwise flip
+        // the mtime between the check's two metadata calls and be
+        // misreported as a symlink swap.
+        self.recheck_identity(&resolved, &[&self.workspace_root])?;
 
         if resolved.exists() && resolved.is_dir() {
             return Err(FsError::NotAFile(path.to_string()));
@@ -365,9 +403,9 @@ impl WorkspaceFs {
 
     /// Replace lines `start..=end` (1-indexed) with `new_content`.
     ///
-    /// **TOCTOU note**: There is a window between [`resolve`](Self::resolve)
-    /// and the actual `fs::write` call. See [`resolve`](Self::resolve) for
-    /// the limitations of our TOCTOU protection.
+    /// **TOCTOU note**: The identity re-check runs under the per-file
+    /// lock, which is held across the whole read → modify → write.  See
+    /// [`recheck_identity`] for the known limitations.
     pub fn edit_lines(
         &self,
         path: &str,
@@ -388,7 +426,7 @@ impl WorkspaceFs {
             )));
         }
 
-        let resolved = self.resolve(path)?;
+        let (resolved, lock) = self.resolve_for_write(path)?;
         if !resolved.is_file() {
             return Err(FsError::NotAFile(path.to_string()));
         }
@@ -399,8 +437,11 @@ impl WorkspaceFs {
         // silently clobber the earlier one while both report success.
         // Hold the per-file lock across the whole read → modify → write.
         // (`lock` must outlive `_guard`, hence the separate binding.)
-        let lock = self.file_lock(&resolved);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Identity re-check under the per-file lock — see
+        // [`recheck_identity`] for why the ordering matters.
+        self.recheck_identity(&resolved, &[&self.workspace_root])?;
 
         let content = fs::read_to_string(&resolved).map_err(FsError::Io)?;
         let line_end = detect_line_end(&content);
@@ -461,7 +502,7 @@ impl WorkspaceFs {
     /// Returns the 1-indexed inclusive line range the replacement occupies
     /// in the NEW file.
     pub fn edit_content(&self, path: &str, old: &str, new: &str) -> Result<EditSpan, FsError> {
-        let resolved = self.resolve(path)?;
+        let (resolved, lock) = self.resolve_for_write(path)?;
         if !resolved.is_file() {
             return Err(FsError::NotAFile(path.to_string()));
         }
@@ -477,8 +518,11 @@ impl WorkspaceFs {
         // the same file must apply in a clean order. Content matching also
         // means a stale second edit (whose needle was consumed by the
         // first) fails loudly instead of applying at wrong coordinates.
-        let lock = self.file_lock(&resolved);
         let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+
+        // Identity re-check under the per-file lock — see
+        // [`recheck_identity`] for why the ordering matters.
+        self.recheck_identity(&resolved, &[&self.workspace_root])?;
 
         let content = fs::read_to_string(&resolved).map_err(FsError::Io)?;
         let matches = find_crlf_tolerant(&content, old);

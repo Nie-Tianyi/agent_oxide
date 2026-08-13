@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`WorkspaceFs` TOCTOU re-check false positive on concurrent writes** —
+  the `(len, mtime)` identity check ran *before* the per-file write lock,
+  so a concurrent in-process write of equal-length content flipped the
+  mtime between the check's two `metadata()` calls and was misreported
+  as `WorkspaceEscape("file identity changed — possible symlink swap")`.
+  `write` / `edit_lines` / `edit_content` now run the re-check **under**
+  the per-file lock, which is held across the whole mutation; in-process
+  operations serialize cleanly and external symlink swaps are still
+  detected.  (Surfaced as the flaky
+  `test_concurrent_write_and_edit_consistent` under full-suite load.)
+
 - **MSRV raised to 1.88** — required by `time` 0.3.47+ (patched
   RUSTSEC-2026-0009, an RFC 2822 parse stack-exhaustion DoS; unpatched
   versions could not be pinned without the bump). The 0.5.0 release's

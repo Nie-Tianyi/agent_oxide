@@ -193,12 +193,23 @@ impl ShellRunner {
 
     #[cfg(target_os = "windows")]
     fn build_command(&self, command: &str) -> Command {
+        use std::os::windows::process::CommandExt;
+
+        // raw_arg passes each argument verbatim — Rust's default
+        // CRT-style quoting (backslash-escaped `\"` inside the arg) is
+        // incompatible with cmd's /S /C quote-stripping, which does not
+        // unescape backslashes.  `cmd /S /C "echo "hello world""` keeps
+        // inner quotes intact (cmd strips only the outermost pair);
+        // `cmd /S /C "echo \"hello world\""` prints the backslashes.
+        // Wrapping the whole command in an outer quote pair preserves
+        // inner quotes for `findstr /c:"a b"`, `git commit -m "msg"`, …
         let mut cmd = Command::new("cmd");
         // `/D` disables the AutoRun registry hook — a command-injection
-        // vector the env sanitizer cannot see; `/S` disables cmd's
-        // quote-stripping reparse so the single-argument form below is
-        // passed through verbatim.
-        cmd.args(["/D", "/S", "/C", command]);
+        // vector the env sanitizer cannot see.
+        cmd.raw_arg("/D");
+        cmd.raw_arg("/S");
+        cmd.raw_arg("/C");
+        cmd.raw_arg(format!("\"{command}\""));
         self.finish_command(&mut cmd);
         cmd
     }
@@ -387,6 +398,38 @@ mod tests {
         let out = make_runner(&tmp).run("echo a; echo b", None).unwrap();
         assert!(out.stdout.contains('a'), "stdout: {:?}", out.stdout);
         assert!(out.stdout.contains('b'), "stdout: {:?}", out.stdout);
+    }
+
+    /// Regression: quoted arguments must survive to cmd.  Rust's default
+    /// CRT-style quoting (`\"` inside the arg) is incompatible with
+    /// cmd /S /C quote-stripping — `findstr /c:` with a space in the
+    /// search string used to be mangled into a broken pattern.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn quoted_findstr_pattern_survives() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("probe.txt"), "alpha beta\n").unwrap();
+        let command = format!(
+            "findstr /n /c:\"alpha beta\" {}",
+            tmp.path().join("probe.txt").display()
+        );
+        let out = make_runner(&tmp).run(&command, None).unwrap();
+        assert!(out.stdout.contains("alpha beta"), "stdout: {:?}", out.stdout);
+    }
+
+    /// Regression: inner quotes must be preserved, not escaped into
+    /// backslash-quotes that cmd prints verbatim.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn quoted_echo_preserves_inner_quotes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = make_runner(&tmp).run(r#"echo "hello world""#, None).unwrap();
+        assert_eq!(out.stdout.trim(), r#""hello world""#, "stdout: {:?}", out.stdout);
+        assert!(
+            !out.stdout.contains("\\\""),
+            "backslash-quote escaping must not leak to cmd: {:?}",
+            out.stdout
+        );
     }
 
     #[test]

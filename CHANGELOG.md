@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-08-14
+
+### Fixed
+
+- **`ShellRunner` Windows quoting** — building the command with
+  `cmd.args([...])` applied Rust's CRT-style quoting (backslash-escaped
+  `\"` inside the argument), which cmd's `/S /C` quote-stripping does not
+  unescape.  Commands with inner quotes (`findstr /c:"a b"`,
+  `git commit -m "msg"`, `echo "hello world"`) had backslashes leak into
+  the output or broke into mangled arguments.  `build_command` now uses
+  `raw_arg` with the command wrapped in an outer quote pair — cmd strips
+  exactly that pair and inner quotes survive verbatim.  Regression tests
+  for `findstr /c:` and `echo "..."` added (Windows).
+
 ## [0.6.0] - 2026-08-14
 
 ### Changed

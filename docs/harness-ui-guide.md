@@ -39,7 +39,12 @@ let agent = Agent::builder(client, "deepseek-chat")
     .tool(ReadTool::new(workspace))
     .tool(ShellTool::new())
     .hook(SandboxHook::new(sandbox_config))
-    .hook(PersistenceHook::new(persistence_config))
+    .hook(PersistenceHook::new(
+        workspace_root,
+        persistence_config,
+        client.clone(), // any LLMClient — not just DeepSeekClient
+        "deepseek-chat".into(),
+    ))
     .max_steps(50)
     .build();
 ```
@@ -183,7 +188,12 @@ let agent = Agent::builder(client, "deepseek-v4-pro")
     .tool(SubagentTool::new(...))
     .tool(LoadSkillTool::new(...))
     .hook(ObservabilityHook::new(trace_store))
-    .hook(PersistenceHook::new(PersistenceConfig::default()))
+    .hook(PersistenceHook::new(
+        workspace_root,
+        PersistenceConfig::default(),
+        client.clone(),
+        "deepseek-chat".into(),
+    ))
     .hook(SkillInjectHook::new(active_skills))
     .hook(MicroCompactHook::default())
     .hook(MacroCompactHook::default())

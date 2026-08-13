@@ -232,7 +232,10 @@ agent_oxide/
     ├── beginner-developer-guide.md
     ├── senior-developer-guide.md
     ├── sandbox-architecture.md
-    └── agent-kit-guide.md
+    ├── agent-kit-guide.md
+    ├── nooa-agent-guide.md
+    ├── harness-ui-guide.md
+    └── migration-guide-0.5.1-to-0.6.0.md
 ```
 
 > The public API is flat: every module in `src/core/` and `src/extensions/`
@@ -439,6 +442,7 @@ Tests are **inline** (`#[cfg(test)] mod tests { ... }`) co-located with source
 | [agent-kit-guide.md](docs/agent-kit-guide.md) | NOOA full reference — macros, strategies, structured output, `into_agent` |
 | [nooa-agent-guide.md](docs/nooa-agent-guide.md) | Step-by-step tutorial — define your first NOOA agent, one concept at a time |
 | [harness-ui-guide.md](docs/harness-ui-guide.md) | Build your own Harness (orchestration, SKILLs, plugins) and UI layers with the core APIs |
+| [migration-guide-0.5.1-to-0.6.0.md](docs/migration-guide-0.5.1-to-0.6.0.md) | Upgrade downstream crates from 0.5.1 to 0.6.0 — every breaking change with before/after code |
 
 ## License
 

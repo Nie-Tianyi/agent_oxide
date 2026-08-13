@@ -73,7 +73,8 @@ pub use serde_json;
 /// Default model used by generation methods when no `#[agent(model)]`
 /// field is present.
 ///
-/// This is a library-level default; downstream applications should
-/// override it via `#[agent(model = "...")]` or their own configuration
-/// (e.g. an environment variable).
-pub const DEFAULT_MODEL: &str = "deepseek-v4-pro";
+/// Re-exported from [`crate::deepseek::DEFAULT_MODEL`] — vendor-specific
+/// defaults live in the vendor module, not in the generic agent_kit
+/// layer.  Downstream applications should override it via
+/// `#[agent(model = "...")]` or their own configuration.
+pub use crate::deepseek::DEFAULT_MODEL;

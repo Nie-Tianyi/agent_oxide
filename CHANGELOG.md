@@ -18,6 +18,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`PersistenceHook` is now provider-generic** — `PersistenceHook<C: LLMClient>`
+  instead of hardcoding `DeepSeekClient`, matching `SubagentTool` /
+  `MacroCompactHook`.  Constructor parameter `flash_model` renamed to
+  `title_model`.  **Breaking:** callers must name the type parameter or
+  rely on inference.
+- **`DEFAULT_MODEL` moved to the vendor module** —
+  `agent_oxide::deepseek::DEFAULT_MODEL` now defines the fallback model
+  used when no `#[agent(model)]` field is present; `agent_kit` re-exports
+  it for backwards compatibility instead of defining a vendor constant
+  in the generic layer.
+
+Breaking changes above are documented with before/after code in
+[docs/migration-guide-0.5.1-to-0.6.0.md](docs/migration-guide-0.5.1-to-0.6.0.md)
+— keep that guide in sync with this section.
+
 ### Added
 
 - **Umbrella crate** — `agent_oxide` re-exports the whole framework under

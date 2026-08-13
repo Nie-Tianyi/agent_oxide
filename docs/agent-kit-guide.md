@@ -87,7 +87,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 Applied to a struct, it generates:
 
 - `agent_client()` → `&C` (reference to the client field)
-- `agent_model()` → `String` (value of the `#[agent(model)]` field, or `agent_oxide::agent_kit::DEFAULT_MODEL` = `deepseek-v4-pro`)
+- `agent_model()` → `String` (value of the `#[agent(model)]` field, or the vendor default from `agent_oxide::deepseek::DEFAULT_MODEL` = `deepseek-v4-pro`, re-exported as `agent_oxide::agent_kit::DEFAULT_MODEL`)
 - `agent_system_prompt()` → `String` (the struct's doc comment)
 - `agent_context_prompt()` → `String` (rendered `#[context]` fields; empty string if none)
 - `into_agent(model)` / `into_agent_with(model, config)` → `agent_oxide::engine::Agent<C>` (assembly)
@@ -273,7 +273,12 @@ let config = agent_oxide::agent_kit::BuildConfig::default()
     .max_steps(50)
     .max_retries(3)
     .hook(SandboxHook::new(...))          // any AgentHook + 'static
-    .hook(PersistenceHook::new(...))
+    .hook(PersistenceHook::new(
+        workspace_root,
+        config,
+        client,                           // generic: any LLMClient
+        "deepseek-chat".into(),
+    ))
     .streaming(true);
 
 // Style 2: struct literal.

@@ -1,7 +1,7 @@
 //! Hook that persists the conversation to disk after each agent run.
 //!
 //! Implements `on_run_start` to auto-generate a concise conversation
-//! title from the user's first query (via the flash model), and
+//! title from the user's first query (via a cheap title model), and
 //! `on_run_finish` to save the full conversation state (JSON +
 //! Markdown) to the configured threads directory.  Fires for
 //! both success and error outcomes — cancellation bypasses hooks
@@ -12,7 +12,6 @@
 
 use std::path::PathBuf;
 
-use crate::deepseek::DeepSeekClient;
 use crate::engine::{AgentHook, RunOutcome};
 use crate::memory::SharedMemory;
 use crate::provider::{CompletionRequest, LLMClient, Message, Role};
@@ -24,40 +23,43 @@ use crate::persistence::{
 
 /// Saves conversation to disk after every agent run completes.
 ///
-/// On the first query of a conversation, asks the flash model to
+/// On the first query of a conversation, asks the title model to
 /// generate a concise title from the user's input and records it as
 /// the current thread name, so subsequent saves land under a
 /// human-recognisable filename.
-pub struct PersistenceHook {
+///
+/// Generic over the LLM provider (`C: LLMClient`) like the rest of
+/// the extension layer — any client implementing [`LLMClient`] works.
+pub struct PersistenceHook<C: LLMClient> {
     workspace_root: PathBuf,
     config: PersistenceConfig,
-    /// Stateless HTTP client for the title-generation LLM call.
-    client: DeepSeekClient,
+    /// LLM client used for the title-generation call.
+    client: C,
     /// The cheap model used for title generation (e.g. `"deepseek-chat"`).
-    flash_model: String,
+    title_model: String,
 }
 
-impl PersistenceHook {
+impl<C: LLMClient> PersistenceHook<C> {
     pub fn new(
         workspace_root: PathBuf,
         config: PersistenceConfig,
-        client: DeepSeekClient,
-        flash_model: String,
+        client: C,
+        title_model: String,
     ) -> Self {
         Self {
             workspace_root,
             config,
             client,
-            flash_model,
+            title_model,
         }
     }
 }
 
-impl AgentHook for PersistenceHook {
+impl<C: LLMClient> AgentHook for PersistenceHook<C> {
     /// Generate a conversation title from the first user query.
     ///
     /// If this is the first query of a fresh conversation (see
-    /// [`is_new_conversation`](Self::is_new_conversation)), the flash
+    /// [`is_new_conversation`](Self::is_new_conversation)), the title
     /// model summarises the user input into a concise sentence-case
     /// title (JSON output), which is persisted via
     /// [`write_current_thread_name`] so [`default_thread_name`] picks
@@ -71,14 +73,14 @@ impl AgentHook for PersistenceHook {
         }
 
         tracing::info!(
-            model = %self.flash_model,
+            model = %self.title_model,
             "Conversation title generation started",
         );
 
-        // ── Call the flash model ──
+        // ── Call the title model ──
         let prompt = build_title_prompt(user_input);
         let request =
-            CompletionRequest::new(&self.flash_model, vec![Message::new(Role::User, prompt)]);
+            CompletionRequest::new(&self.title_model, vec![Message::new(Role::User, prompt)]);
 
         // Block the agent loop, not the UI — same pattern as ProfileHook.
         // A bare `Handle::block_on` would panic here: hooks run on a tokio
@@ -145,7 +147,7 @@ impl AgentHook for PersistenceHook {
 
 // ── First-query detection (private helpers) ───────────────────────────────────
 
-impl PersistenceHook {
+impl<C: LLMClient> PersistenceHook<C> {
     /// True when the next run is the first query of a fresh conversation.
     ///
     /// The TUI pre-writes the thread marker *before* the agent run
@@ -165,7 +167,7 @@ impl PersistenceHook {
 
 // ── Title generation prompt ───────────────────────────────────────────────────
 
-/// Build the prompt sent to the flash model to title the conversation.
+/// Build the prompt sent to the title model to title the conversation.
 ///
 /// The user's first query is wrapped in `<session>` tags; the model is
 /// asked to return a concise, sentence-case title as a JSON object
@@ -263,15 +265,62 @@ mod tests {
     use std::sync::{Arc, RwLock};
 
     use super::*;
+    use crate::provider::{Choice, ChoiceMessage, CompletionResponse, ProviderError, StreamChunk};
+    use futures_util::stream::BoxStream;
+
+    /// Minimal in-memory [`LLMClient`] returning a canned completion —
+    /// proves `PersistenceHook` is provider-agnostic, not DeepSeek-specific.
+    #[derive(Clone)]
+    struct MockTitleClient {
+        response: CompletionResponse,
+    }
+
+    impl LLMClient for MockTitleClient {
+        async fn generate(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<CompletionResponse, ProviderError> {
+            Ok(self.response.clone())
+        }
+
+        async fn stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
+            unreachable!("MockTitleClient::stream is not used by PersistenceHook")
+        }
+    }
+
+    fn title_response(title: &str) -> CompletionResponse {
+        CompletionResponse {
+            id: "mock".into(),
+            object: "chat.completion".into(),
+            created: 0,
+            model: "mock".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: ChoiceMessage {
+                    role: Role::Assistant,
+                    content: Some(format!(r#"{{"title": "{title}"}}"#)),
+                    reasoning_content: None,
+                    tool_calls: None,
+                },
+                finish_reason: None,
+            }],
+            usage: None,
+        }
+    }
 
     /// Build a `PersistenceHook` for tests — construction never touches
     /// the network (the client is only used inside `on_run_start`).
-    fn make_hook(tmp: &tempfile::TempDir) -> PersistenceHook {
+    fn make_hook(tmp: &tempfile::TempDir) -> PersistenceHook<MockTitleClient> {
         PersistenceHook::new(
             tmp.path().to_path_buf(),
             PersistenceConfig::default(),
-            DeepSeekClient::new("test-key"),
-            "deepseek-chat".to_string(),
+            MockTitleClient {
+                response: title_response("unused"),
+            },
+            "mock-model".to_string(),
         )
     }
 
@@ -325,6 +374,30 @@ mod tests {
             read_current_thread_name(tmp.path(), &config).as_deref(),
             Some("my-thread"),
             "existing custom thread name must be preserved"
+        );
+    }
+
+    #[test]
+    fn test_on_run_start_generates_title_via_generic_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = PersistenceConfig::default();
+        let hook: PersistenceHook<MockTitleClient> = PersistenceHook::new(
+            tmp.path().to_path_buf(),
+            config.clone(),
+            MockTitleClient {
+                response: title_response("Refactor API client"),
+            },
+            "mock-model".to_string(),
+        );
+
+        // First query of a fresh conversation — exercises the full
+        // title-generation path, including the `block_on` bridge.
+        hook.on_run_start("test", "Help me refactor the API client", &make_memory());
+
+        assert_eq!(
+            read_current_thread_name(tmp.path(), &config).as_deref(),
+            Some("Refactor API client"),
+            "title from the mock LLM response should be recorded as the thread name"
         );
     }
 

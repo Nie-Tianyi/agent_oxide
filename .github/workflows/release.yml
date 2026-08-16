@@ -48,7 +48,12 @@ jobs:
           set -e
           version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
           for crate in agent-oxide-macros agent_oxide; do
-            if cargo info "$crate@$version" >/dev/null 2>&1; then
+            # --registry crates-io is essential: without it, `cargo info`
+            # resolves against the local workspace first, and the checkout
+            # ALWAYS contains this exact version (workspace member /
+            # path dependency) — the check would be trivially true and
+            # publishing would never run.
+            if cargo info "$crate@$version" --registry crates-io >/dev/null 2>&1; then
               echo "── $crate $version already on crates.io — skipping"
             else
               echo "── publishing $crate $version"

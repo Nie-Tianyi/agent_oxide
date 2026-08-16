@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **ReAct loop self-deadlock on the final answer** — the 0.6.1
+  `lock_memory()` refactor bound the memory write guard to a named
+  variable that stayed alive across `return self.finish_run(...)`, so
+  the write lock was still held (by the agent task itself) while
+  `finish_run` synchronously notified hooks.  Hooks that take
+  `memory.read()` in `on_run_finish` — `ObservabilityHook` (usage
+  summary) and `PersistenceHook` (auto-save) — deadlocked the agent
+  task on the first of them, so auto-save never ran and any later
+  `memory.read()` (shutdown save, `/save`, UI refresh) hung forever.
+  The guard is now scoped to the push and dropped before `finish_run`
+  in both the streaming and non-streaming loops.  Regression tests
+  assert `on_run_finish` observes a released write lock.
+
 ## [0.6.1] - 2026-08-14
 
 ### Fixed

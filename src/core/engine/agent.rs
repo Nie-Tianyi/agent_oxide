@@ -850,12 +850,19 @@ impl<C: LLMClient> Agent<C> {
                 };
                 mem.push(assistant_msg);
             } else {
-                // Final answer → push to memory and return.
-                let mut mem = match self.lock_memory() {
-                    Ok(m) => m,
-                    Err(e) => return self.fail_run(e, &tx),
-                };
-                mem.push(assistant_msg.clone());
+                // Final answer → push to memory and return.  The write
+                // guard MUST be dropped before finish_run: its
+                // on_run_finish hooks (ObservabilityHook,
+                // PersistenceHook) take memory.read() on this same
+                // thread, so holding the write lock across finish_run
+                // self-deadlocks.
+                {
+                    let mut mem = match self.lock_memory() {
+                        Ok(m) => m,
+                        Err(e) => return self.fail_run(e, &tx),
+                    };
+                    mem.push(assistant_msg.clone());
+                }
                 return self.finish_run(assistant_msg.content, &tx);
             }
         }
@@ -985,11 +992,16 @@ impl<C: LLMClient> Agent<C> {
                 };
                 mem.push(msg);
             } else {
-                let mut mem = match self.lock_memory() {
-                    Ok(m) => m,
-                    Err(e) => return self.fail_run(e, &tx),
-                };
-                mem.push(msg);
+                // Same deadlock hazard as the streaming loop: drop the
+                // write guard before finish_run, whose on_run_finish
+                // hooks take memory.read() on this thread.
+                {
+                    let mut mem = match self.lock_memory() {
+                        Ok(m) => m,
+                        Err(e) => return self.fail_run(e, &tx),
+                    };
+                    mem.push(msg);
+                }
                 return self.finish_run(content, &tx);
             }
         }
@@ -1595,6 +1607,7 @@ mod tests {
     use crate::provider::{Choice, ChoiceMessage};
     use std::collections::VecDeque;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     /// Scripted LLM client — pops responses from a queue.
     struct ScriptedClient {
@@ -1739,6 +1752,129 @@ mod tests {
                 "tool 'shell' rejected: blocked by test hook".to_string()
             )],
             "hooks before the rejector must receive on_tool_rejected with the full error"
+        );
+    }
+
+    // ── finish_run must not hold the memory write lock ──────────────
+
+    /// Records whether memory was write-locked while `on_run_finish`
+    /// hooks were notified.
+    ///
+    /// Real hooks (ObservabilityHook, PersistenceHook) take
+    /// `memory.read()` in `on_run_finish` — if the engine still holds
+    /// its write guard when calling `finish_run`, that read blocks the
+    /// agent task forever (self-deadlock) and every save path behind
+    /// the hook stalls.  `try_read` turns the deadlock into a
+    /// deterministic test failure instead of a hung test.
+    struct WriteLockFreeHook {
+        write_locked: Arc<AtomicBool>,
+    }
+
+    impl AgentHook for WriteLockFreeHook {
+        fn on_run_finish(&self, _session_id: &str, _outcome: &RunOutcome, memory: &SharedMemory) {
+            if memory.try_read().is_err() {
+                self.write_locked.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// Scripted streaming LLM client — yields a fixed chunk sequence once.
+    struct ScriptedStreamClient {
+        chunks: Mutex<Vec<Result<StreamChunk, ProviderError>>>,
+    }
+
+    impl LLMClient for ScriptedStreamClient {
+        async fn generate(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<CompletionResponse, ProviderError> {
+            unreachable!("ScriptedStreamClient::generate should not be called (streaming enabled)")
+        }
+
+        async fn stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<
+            futures_util::stream::BoxStream<'static, Result<StreamChunk, ProviderError>>,
+            ProviderError,
+        > {
+            let chunks = std::mem::take(&mut *self.chunks.lock().unwrap());
+            Ok(Box::pin(futures_util::stream::iter(chunks)))
+        }
+    }
+
+    /// Two-chunk final-answer stream: a content delta followed by the
+    /// terminal `"stop"` chunk (no tool calls, no truncation).
+    fn final_answer_chunks(text: &str) -> Vec<Result<StreamChunk, ProviderError>> {
+        let chunk = |content: &str, finish_reason: Option<&str>| {
+            serde_json::from_value(serde_json::json!({
+                "id": "1",
+                "object": "c",
+                "created": 1,
+                "model": "m",
+                "choices": [{
+                    "index": 0,
+                    "delta": {"content": content},
+                    "finish_reason": finish_reason,
+                }],
+                "usage": null,
+            }))
+            .unwrap()
+        };
+        vec![Ok(chunk(text, None)), Ok(chunk("", Some("stop")))]
+    }
+
+    /// Regression: the final-answer branch must release its memory
+    /// write guard before `finish_run` notifies hooks — 0.6.1 held it
+    /// across the call, self-deadlocking any hook that reads memory
+    /// (observability, persistence) and killing auto-save.
+    #[test]
+    fn test_finish_run_releases_memory_lock_non_streaming() {
+        let client = ScriptedClient {
+            responses: Mutex::new(VecDeque::from([plain_response("done")])),
+        };
+        let write_locked = Arc::new(AtomicBool::new(false));
+        let agent = Agent::builder(client, "test-model")
+            .streaming(false)
+            .hook(WriteLockFreeHook {
+                write_locked: Arc::clone(&write_locked),
+            })
+            .build();
+
+        let answer = futures_executor::block_on(agent.run("hi")).unwrap();
+        assert_eq!(answer, "done", "run must complete");
+        assert!(
+            !write_locked.load(Ordering::SeqCst),
+            "engine must release the memory write lock before on_run_finish hooks run"
+        );
+    }
+
+    /// Streaming-loop variant of the regression above.
+    ///
+    /// Needs a real tokio reactor — the inner loop's per-chunk
+    /// `tokio::time::timeout` panics under a bare `block_on`.
+    #[test]
+    fn test_finish_run_releases_memory_lock_streaming() {
+        let client = ScriptedStreamClient {
+            chunks: Mutex::new(final_answer_chunks("done")),
+        };
+        let write_locked = Arc::new(AtomicBool::new(false));
+        let agent = Agent::builder(client, "test-model")
+            .streaming(true)
+            .hook(WriteLockFreeHook {
+                write_locked: Arc::clone(&write_locked),
+            })
+            .build();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        let answer = rt.block_on(agent.run("hi")).unwrap();
+        assert_eq!(answer, "done", "run must complete");
+        assert!(
+            !write_locked.load(Ordering::SeqCst),
+            "engine must release the memory write lock before on_run_finish hooks run"
         );
     }
 }

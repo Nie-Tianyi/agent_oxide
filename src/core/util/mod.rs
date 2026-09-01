@@ -1,10 +1,10 @@
 //! # Utilities
 //!
-//! Small helpers shared across the workspace (persistence crate, sandbox
-//! audit logging, hooks in the binary).
+//! Small helpers shared across the workspace — core and extensions alike.
 
 pub(crate) mod md;
 
+use crate::provider::{Message, Role};
 use time::OffsetDateTime;
 use time::macros::format_description;
 
@@ -19,6 +19,32 @@ pub fn iso8601_now() -> String {
             "[year]-[month]-[day]T[hour]:[minute]:[second]Z"
         ))
         .expect("compile-time-validated format")
+}
+
+/// Insert `msg` after the trailing System-message block — i.e. before the
+/// first non-System message, or at the end if there are none.
+///
+/// Injector hooks (compaction, skills, context blocks) must use this instead
+/// of `insert(0, …)`: volatile injected content (`[SKILL]`, `[PLAN_MODE]`,
+/// `[PROFILE]`, `[COMPACT_SUMMARY]`, `[TODO]`) placed in front of the static
+/// system prompt would invalidate the provider's prompt-cache prefix on
+/// every change, forcing a full re-parse of the most expensive (and most
+/// stable) part of the request.  Anchoring the insert at the tail of the
+/// System block keeps the static head byte-identical, so only the dynamic
+/// history misses.
+///
+/// The hook registration order decides the ordering inside the tail: the
+/// more volatile an injector, the later it must run, so it lands closer to
+/// the history.  `TodoListHook` is the most volatile ([TODO] changes on
+/// every plan update) and runs last, keeping the rarely-changing
+/// `[COMPACT_SUMMARY]` before it — a plan update then only invalidates the
+/// cache prefix past the history boundary, never the compaction summary.
+pub fn insert_before_history(messages: &mut Vec<Message>, msg: Message) {
+    let idx = messages
+        .iter()
+        .position(|m| m.role != Role::System)
+        .unwrap_or(messages.len());
+    messages.insert(idx, msg);
 }
 
 /// Returns the largest `char`-boundary index of `s` that is `<= max`.

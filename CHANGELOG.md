@@ -7,7 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bundled `SkillTool` + `SkillHook`** — the skill activation loop now
+  ships in the framework: `SkillTool` lets the LLM load a skill by name,
+  writing its content into the shared `ActiveSkills` state; `SkillHook`
+  drains and re-injects active skills as `[SKILL]`-prefixed System messages
+  on every `on_llm_start` (anchored after the static system prompt via
+  `insert_before_history`, so the prompt-cache prefix stays stable).
+  Harnesses no longer implement their own tool/hook — they wire registry +
+  `ActiveSkills` + `SkillRegistry::system_prompt_section()` (new: renders
+  the available-skill list for the system prompt). Both live in
+  `agent_oxide::skills`.
+
 ### Changed
+
+- **Extension reorganisation by feature (breaking)** — the `hooks` module
+  is renamed to `compact` (`agent_oxide::compact::*`: `MicroCompactHook`,
+  `MacroCompactHook`, `CompactError`, `COMPACT_*` constants); `SkillHook` +
+  `SKILL_MARKER` move to `agent_oxide::skills`; the shared
+  `insert_before_history` helper moves to `agent_oxide::util`.
+- **Subagents are now Markdown-defined only (breaking)** — the compile-time
 
 - **Subagents are now Markdown-defined only (breaking)** — the compile-time
   path is removed: `SubagentConfig`, `filter_tools`, the fixed `"task"`

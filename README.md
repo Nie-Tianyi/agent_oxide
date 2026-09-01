@@ -139,11 +139,11 @@ Every feature is a module of `agent_oxide`:
 | `engine` | Agent ReAct loop, `AgentHook`, `AgentEvent` |
 | `util` | Shared utilities (`iso8601_now`) |
 | `agent_kit` | NOOA — NVIDIA OO Agents-style ergonomics (`#[derive(Agent)]`) |
-| `hooks` | Compaction hooks (micro/macro) |
+| `compact` | Compaction hooks (micro/macro) |
 | `observability` | Full-chain tracing |
 | `persistence` | Conversation save/load |
 | `sandbox` | 5-layer security sandbox |
-| `skills` | Skill discovery & registry |
+| `skills` | Skill discovery, registry, `SkillTool` + `SkillHook` |
 | `subagent` | Spawn child agents as tools |
 
 ## Defining tools
@@ -195,8 +195,9 @@ impl EchoTool {
   via a cheap model when token usage exceeds a threshold.
 - **Persistence** — conversations auto-save as JSON + Markdown, with
   LLM-generated thread titles.
-- **Skills** — `.md` files with YAML frontmatter discovered at startup
-  and injected as system messages.
+- **Skills** — `.md` files with YAML frontmatter discovered at startup;
+  `SkillTool` lets the LLM load one by name, `SkillHook` injects active
+  skills as System messages.
 - **Agent Kit** — NOOA (NVIDIA OO Agents-style) ergonomics: class-doc =
   system prompt, sync methods = tools, async methods = LLM generations.
 
@@ -221,8 +222,8 @@ agent_oxide/
 │   │   ├── util/           # Shared utilities (iso8601_now)
 │   │   └── engine/         # Agent (ReAct loop), AgentHook trait, AgentEvent, ResponseRouter
 │   └── extensions/         # optional capabilities layered on the engine
-│       ├── skills/         # SkillDef, SkillRegistry — skill discovery & loading
-│       ├── hooks/          # MicroCompactHook + MacroCompactHook
+│       ├── skills/         # SkillDef, SkillRegistry, SkillTool, SkillHook
+│       ├── compact/        # MicroCompactHook + MacroCompactHook
 │       ├── persistence/    # Conversation persistence — save/load threads, PersistenceHook
 │       ├── subagent/       # SubagentTool — spawn child agents as tools
 │       ├── observability/  # TraceEvent, TraceStore, RunMetrics — full-chain tracing
@@ -349,7 +350,7 @@ user-invoked tool calls.
   supply Memory and ToolRegistry explicitly, configure hooks, max_steps,
   max_retries, streaming, pending_hints.
 
-#### Two-tier compaction (hooks crate)
+#### Two-tier compaction (compact crate)
 
 1. **MicroCompact** — `on_llm_start()` clears old tool outputs from
    high-volume tools (`read`, `shell`, `grep`, `glob`, `edit`, `write`, `ls`)
@@ -360,7 +361,7 @@ user-invoked tool calls.
    for summarisation via `engine::block_on`, inserts summary as System
    message.
 
-Key constants in `src/extensions/hooks/compact.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
+Key constants in `src/extensions/compact/mod.rs`: `DEFAULT_COMPACT_TOKEN_LIMIT`,
 `DEFAULT_COMPACT_CHAR_LIMIT`, `DEFAULT_KEEP_LAST_N`, `DEFAULT_KEEP_RECENT_TOOL_OUTPUTS`.
 
 #### Sandbox (defense in depth)
@@ -395,8 +396,12 @@ lock-free `RunMetrics` atomics. Trace events flow via the `tracing` crate.
 
 `SkillRegistry` (src/extensions/skills) discovers and parses `.md` skill files
 (YAML frontmatter + body) from user-configured skill directories. The
-registry is provider-agnostic; consuming applications wire it to their own
-`SkillTool` / `SkillHook`.
+framework ships the full activation loop: `SkillTool` lets the LLM load a
+skill by name (writing it into the shared `ActiveSkills` state), and
+`SkillHook` (src/extensions/hooks) injects active skills as System messages
+before every LLM call. The harness only wires the registry, the shared
+`ActiveSkills` state, and `registry.system_prompt_section()` into its static
+prompt.
 
 #### Persistence
 

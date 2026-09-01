@@ -14,8 +14,8 @@ use super::hooks::AgentHook;
 ///
 /// **Compaction**: both micro-compaction (tool-output clearing) and
 /// macro-compaction (LLM summarisation) are provided as hooks in the
-/// `hooks` crate — register [`MicroCompactHook`](hooks::MicroCompactHook)
-/// and [`MacroCompactHook`](hooks::MacroCompactHook) via
+/// `compact` crate — register [`MicroCompactHook`](crate::compact::MicroCompactHook)
+/// and [`MacroCompactHook`](crate::compact::MacroCompactHook) via
 /// [`hooks()`](Self::hooks).
 pub struct EngineContext<C: LLMClient> {
     /// LLM provider implementation.

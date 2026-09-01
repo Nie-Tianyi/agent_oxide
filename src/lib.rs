@@ -47,11 +47,11 @@
 //! | [`engine`] | Agent ReAct loop, `AgentHook`, `AgentEvent` |
 //! | [`util`] | Shared utilities (`iso8601_now`) |
 //! | [`agent_kit`] | NVIDIA OO Agents-style ergonomics |
-//! | [`hooks`] | Compaction hooks (micro/macro) |
+//! | [`compact`] | Compaction hooks (micro/macro) |
 //! | [`observability`] | Full-chain tracing |
 //! | [`persistence`] | Conversation save/load |
 //! | [`sandbox`] | 5-layer security sandbox |
-//! | [`skills`] | Skill discovery & registry |
+//! | [`skills`] | Skill discovery, registry, `SkillTool` + `SkillHook` |
 //! | [`subagent`] | Spawn child agents as tools |
 
 #![deny(unsafe_code)]
@@ -100,15 +100,15 @@ pub use agent_kit::{AgentAssembler, AgentBlueprint, BuildConfig, ContextBlock, C
 /// NVIDIA OO Agents-style ergonomics on top of the core API.
 pub use extensions::agent_kit;
 
-/// Common hooks — compaction, approval, etc.
-pub use extensions::hooks;
+/// Compaction hooks — micro (tool-output clearing) / macro (LLM summarisation).
+pub use extensions::compact;
 /// Full-chain tracing — `TraceEvent`, `TraceStore`, `RunMetrics`.
 pub use extensions::observability;
 /// Conversation persistence — save/load threads.
 pub use extensions::persistence;
 /// 5-layer security sandbox — `WorkspaceFs`, `ShellFilter`, `SandboxHook`, …
 pub use extensions::sandbox;
-/// Skill definitions, discovery, and registry.
+/// Skill definitions, discovery, registry, `SkillTool` + `SkillHook`.
 pub use extensions::skills;
 /// Subagent as Tool — spawn autonomous sub-agents.
 pub use extensions::subagent;
@@ -129,7 +129,7 @@ pub use serde_json;
 pub mod prelude {
     pub use crate::{
         Agent, AgentBuilder, AgentHook, DeepSeekClient, LLMClient, Memory, Message, Role,
-        SharedMemory, Tool, ToolRegistry, agent_impl, agent_kit, deepseek, engine, hooks, memory,
+        SharedMemory, Tool, ToolRegistry, agent_impl, agent_kit, compact, deepseek, engine, memory,
         observability, persistence, provider, sandbox, skills, subagent, tool, tools, util,
     };
 }

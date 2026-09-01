@@ -6,8 +6,9 @@
 //! call when dynamic.
 //!
 //! Implemented as a standard [`AgentHook`] that writes `[CONTEXT:key]`
-//! System messages via `insert_before_history` — the same mechanism the
-//! existing SkillHook / PlanModeHook / ProfileHook / TodoListHook use.
+//! System messages via [`crate::util::insert_before_history`] — the same
+//! mechanism the bundled [`SkillHook`](crate::skills::SkillHook) and the
+//! downstream PlanModeHook / ProfileHook / TodoListHook conventions use.
 //! No core changes required.
 
 use crate::engine::AgentHook;
@@ -132,7 +133,8 @@ impl AgentHook for ContextBlockHook {
         };
         for block in &self.blocks {
             let marker = format!("[CONTEXT:{}]", block.key());
-            // Remove-then-reinsert (same pattern as SkillHook/ProfileHook).
+            // Remove-then-reinsert (same pattern as the bundled SkillHook
+            // and the downstream ProfileHook convention).
             mem.messages.retain(|m| !m.content.starts_with(&marker));
             if let Some(content) = block.render() {
                 let msg = Message::new(Role::System, format!("{marker}\n{content}"));

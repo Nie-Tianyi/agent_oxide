@@ -1,14 +1,17 @@
-//! # Compaction
+//! # Compaction — context memory management
 //!
 //! Two-tier context compaction:
 //!
-//! - [`MicroCompactHook`] — an [`AgentHook`] that clears old tool-output
-//!   content in-place during `on_llm_start`.
+//! - [`MicroCompactHook`] — an [`AgentHook`](crate::engine::AgentHook) that
+//!   clears old tool-output content in-place during `on_llm_start`.
 //!
-//! - [`MacroCompactConfig`] — configuration for full LLM summarisation.
-//!   The agent loop calls out to a cheap model when the token budget
-//!   is exceeded, draining old non-System messages and inserting a summary
-//!   as a new System message.
+//! - [`MacroCompactHook`] — full LLM summarisation: calls a cheap model
+//!   when the token budget is exceeded, draining old non-System messages
+//!   and inserting a summary as a System message.
+//!
+//! Other ready-to-use hooks live in their feature module (e.g.
+//! [`SkillHook`](crate::skills::SkillHook) in `skills`).  The shared
+//! injection helper is [`crate::util::insert_before_history`].
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
@@ -18,7 +21,7 @@ use crate::engine::AgentHook;
 use crate::memory::SharedMemory;
 use crate::provider::{CompletionRequest, LLMClient, Message, Role};
 
-use super::insert_before_history;
+use crate::util::insert_before_history;
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 

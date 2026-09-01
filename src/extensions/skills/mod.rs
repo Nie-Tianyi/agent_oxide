@@ -7,6 +7,9 @@
 //! - Discovering skills from one or more directories on disk
 //! - A read-only [`SkillRegistry`] for fast name-based lookup
 //! - An [`ActiveSkills`] type alias for tracking which skills are active
+//! - [`SkillTool`] — lets the LLM load a skill by name
+//! - [`SkillHook`] — injects active skills as System messages on every
+//!   `on_llm_start`
 //!
 //! # Example
 //!
@@ -27,6 +30,12 @@ use std::sync::{Arc, RwLock};
 
 use serde::Deserialize;
 
+mod skill_hook;
+mod tool;
+
+pub use skill_hook::{SKILL_MARKER, SkillHook};
+pub use tool::SkillTool;
+
 // ── SkillDef ─────────────────────────────────────────────────────────────────────
 
 /// A loaded skill definition — parsed from a skill Markdown file.
@@ -45,8 +54,8 @@ pub struct SkillDef {
 
 /// Thread-safe set of currently active skills.
 ///
-/// Maps skill name → skill content. Shared between the skill-loading tool
-/// (writer) and the hook that injects System messages (reader).
+/// Maps skill name → skill content. Shared between [`SkillTool`] (writer)
+/// and [`SkillHook`] (reader).
 pub type ActiveSkills = Arc<RwLock<HashMap<String, String>>>;
 
 // ── SkillRegistry ────────────────────────────────────────────────────────────────
@@ -165,6 +174,24 @@ impl SkillRegistry {
     /// Whether no skills were discovered.
     pub fn is_empty(&self) -> bool {
         self.skills.is_empty()
+    }
+
+    /// Render the list of available skills as a system-prompt section the
+    /// harness can append to its static prompt.
+    ///
+    /// Returns `None` when no skills were discovered (nothing to advertise);
+    /// otherwise a `## Available skills` block with one `- **name** —
+    /// description` line per skill, sorted by name.
+    pub fn system_prompt_section(&self) -> Option<String> {
+        if self.skills.is_empty() {
+            return None;
+        }
+        let mut lines = String::from("## Available skills\n\n");
+        for skill in &self.skills {
+            // Skills are kept sorted by name; keep the invariant here.
+            lines.push_str(&format!("- **{}** — {}\n", skill.name, skill.description));
+        }
+        Some(lines)
     }
 }
 
@@ -448,5 +475,35 @@ description: Review code changes.
         let reg = SkillRegistry::discover(&paths);
         let names: Vec<&str> = reg.list().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "mike", "zebra"]);
+    }
+
+    // ── system_prompt_section tests ────────────────────────────────────────
+
+    #[test]
+    fn test_system_prompt_section_empty_returns_none() {
+        let reg = SkillRegistry::empty();
+        assert!(reg.system_prompt_section().is_none());
+    }
+
+    #[test]
+    fn test_system_prompt_section_renders_sorted_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        for (name, desc) in [("zebra", "Striped skill."), ("alpha", "First skill.")] {
+            std::fs::write(
+                tmp.path().join(format!("{name}.md")),
+                format!("---\nname: {name}\ndescription: {desc}\n---\nContent for {name}."),
+            )
+            .unwrap();
+        }
+
+        let reg = SkillRegistry::discover(&[tmp.path().to_path_buf()]);
+        let section = reg.system_prompt_section().unwrap();
+        assert!(section.starts_with("## Available skills"));
+        // Sorted by name, one bullet per skill.
+        let alpha = section.find("**alpha**").unwrap();
+        let zebra = section.find("**zebra**").unwrap();
+        assert!(alpha < zebra);
+        assert!(section.contains("— First skill."));
+        assert!(section.contains("— Striped skill."));
     }
 }

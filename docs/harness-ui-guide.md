@@ -98,33 +98,36 @@ for skill in registry.list() {
 ```
 
 Each `SkillDef` carries `name`, `description`, and `content` (the markdown
-body). The registry is provider-agnostic — wiring it into the agent is your
-harness's job, typically two pieces:
+body). The framework ships the full activation loop — your harness only
+wires the pieces together:
 
-1. a **`SkillTool`** the LLM can call to activate a skill
-   (`registry.by_name(name)` → insert into `ActiveSkills`), and
-2. a **`SkillHook`** that injects the activated skill's content as a System
-   message before the next LLM call.
+1. **`SkillTool`** — the LLM calls `skill(name)` to activate one; it writes
+   the content into the shared `ActiveSkills` state, and
+2. **`SkillHook`** — on every `on_llm_start` it drains and re-injects the
+   active skills' content as System messages (before the first non-System
+   message, preserving the prompt-cache prefix).
 
 ```rust,ignore
-use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
-use agent_oxide::skills::{ActiveSkills, SkillRegistry};
+use std::sync::Arc;
+use agent_oxide::skills::{ActiveSkills, SkillHook, SkillRegistry, SkillTool};
 
-let active: ActiveSkills = Arc::new(RwLock::new(HashMap::new()));
+let registry = Arc::new(SkillRegistry::discover(&[project_skills_dir, user_skills_dir]));
+let active: ActiveSkills = Arc::new(std::sync::RwLock::new(HashMap::new()));
 
-// Tool side: "load_skill(name)" → active.insert(name, content)
-let tool = LoadSkillTool { registry, active: active.clone() };
-
-// Hook side: on_llm_start() → push each active skill's content as a System
-// message (read the map under the lock; avoid holding it across the call).
-let hook = SkillInjectHook { active };
+// Advertise available skills in the system prompt (None if none discovered).
+if let Some(section) = registry.system_prompt_section() {
+    system_prompt.push_str(&section);
+}
 
 let agent = Agent::builder(client, model)
-    .tool(tool)
-    .hook(hook)
+    .tool(SkillTool::new(registry, active.clone()))
+    .hook(SkillHook::new(active))
     .build();
 ```
+
+`system_prompt_section()` renders the available-skill list (name +
+description, sorted) — this is what the tool description's "available
+skills listed in the system prompt" refers to.
 
 ### 3. Multi-agent orchestration: subagents and shared memory
 
@@ -191,7 +194,7 @@ use agent_oxide::prelude::*;
 let agent = register_subagents(
     Agent::builder(client.clone(), "deepseek-v4-pro")
         .system_prompt(harness_system_prompt)
-        .tool(LoadSkillTool::new(...))
+        .tool(SkillTool::new(skill_registry.clone(), active_skills.clone()))
         .hook(ObservabilityHook::new(trace_store))
         .hook(PersistenceHook::new(
             workspace_root,
@@ -199,7 +202,7 @@ let agent = register_subagents(
             client.clone(),
             "deepseek-chat".into(),
         ))
-        .hook(SkillInjectHook::new(active_skills))
+        .hook(SkillHook::new(active_skills))
         .hook(MicroCompactHook::default())
         .hook(MacroCompactHook::default())
         .hook(SandboxHook::new(SandboxConfig::load(&sandbox_path)))

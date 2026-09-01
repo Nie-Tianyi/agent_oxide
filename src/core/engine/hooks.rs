@@ -14,7 +14,7 @@ use super::agent::{AgentError, RunOutcome};
 /// where a bare `block_on` panics with "Cannot block_on from within
 /// a runtime".  The agent loop runs in a dedicated tokio task separate
 /// from the TUI thread, so blocking here does not affect the UI.
-/// See [`MacroCompactHook`](hooks::MacroCompactHook) for an example.
+/// See [`MacroCompactHook`](crate::compact::MacroCompactHook) for an example.
 ///
 /// ## Naming convention
 ///

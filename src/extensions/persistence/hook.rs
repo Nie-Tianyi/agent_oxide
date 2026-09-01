@@ -82,7 +82,8 @@ impl<C: LLMClient> AgentHook for PersistenceHook<C> {
         let request =
             CompletionRequest::new(&self.title_model, vec![Message::new(Role::User, prompt)]);
 
-        // Block the agent loop, not the UI — same pattern as ProfileHook.
+        // Block the agent loop, not the UI — the established pattern for
+        // blocking hooks (see the downstream ProfileHook convention).
         // A bare `Handle::block_on` would panic here: hooks run on a tokio
         // worker thread, and blocking a worker is only legal after
         // `block_in_place` (handled inside `crate::engine::block_on`).

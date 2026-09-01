@@ -94,8 +94,8 @@ provider ───────────────────────�
 | `memory` | `Memory`, `SharedMemory` | Conversation buffer | `src/core/memory/buffer.rs` |
 | `persistence` | `PersistenceConfig` | Thread storage layout | `src/extensions/persistence/store.rs` |
 | `persistence` | `PersistenceHook` | Auto-save after each run | `src/extensions/persistence/hook.rs` |
-| `hooks` | `MicroCompactHook` | Tool-output clearing | `src/extensions/hooks/compact.rs` |
-| `hooks` | `MacroCompactHook<C>` | LLM summarisation | `src/extensions/hooks/compact.rs` |
+| `compact` | `MicroCompactHook` | Tool-output clearing | `src/extensions/compact/mod.rs` |
+| `compact` | `MacroCompactHook<C>` | LLM summarisation | `src/extensions/compact/mod.rs` |
 | `engine` | `Agent` | ReAct loop runner | `src/core/engine/agent.rs` |
 | `engine` | `AgentEvent` | Unified event stream (single channel) | `src/core/engine/agent.rs` |
 | `engine` | `AgentHook` | Lifecycle hook trait | `src/core/engine/hooks.rs` |
@@ -870,9 +870,9 @@ Use `EngineContext::builder()` instead of `Agent::builder()` when you need:
 ### Full Wiring Example
 
 ```rust
+use agent_oxide::compact::{MicroCompactHook, MacroCompactHook};
 use agent_oxide::deepseek::DeepSeekClient;
 use agent_oxide::engine::{Agent, EngineContext};
-use agent_oxide::hooks::{MicroCompactHook, MacroCompactHook};
 use agent_oxide::memory::{Memory, SharedMemory};
 use std::sync::Arc;
 use agent_oxide::tools::ToolRegistry;
@@ -1805,7 +1805,7 @@ A fully assembled agent that reviews code.  This example uses the advanced
 ```rust
 use agent_oxide::deepseek::DeepSeekClient;
 use agent_oxide::engine::{Agent, AgentEvent, EngineContext};
-use agent_oxide::hooks::{MicroCompactHook, MacroCompactHook};
+use agent_oxide::compact::{MicroCompactHook, MacroCompactHook};
 use agent_oxide::memory::{Memory, SharedMemory};
 use agent_oxide::subagent::{SubagentRegistry, SubagentTool};
 use std::path::PathBuf;

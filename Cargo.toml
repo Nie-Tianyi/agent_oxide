@@ -1,6 +1,6 @@
 [package]
 name = "agent_oxide"
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 description = "Agent Oxide — a modular agent framework for Rust (ReAct engine, LLM providers, tools, sandbox, persistence, skills, NOOA ergonomics)"
 license.workspace = true
@@ -11,7 +11,7 @@ rust-version.workspace = true
 
 [dependencies]
 # Proc macros — #[derive(Agent)], #[agent_impl], #[tool].
-agent-oxide-macros = { version = "0.6.2", path = "agent_oxide-macros" }
+agent-oxide-macros = { version = "0.7.0", path = "agent_oxide-macros" }
 futures-core = { workspace = true }
 futures-executor = { workspace = true }
 futures-util = { workspace = true }
@@ -48,7 +48,7 @@ members = ["agent_oxide-macros"]
 resolver = "2"
 
 [workspace.package]
-version = "0.6.2"
+version = "0.7.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Nie-Tianyi/agent_oxide"

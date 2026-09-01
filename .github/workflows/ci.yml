@@ -53,9 +53,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      # Plain `cargo audit` instead of rustsec/audit-check@v2: the action
+      # needs `checks: write` for its check-run API and is stuck on the
+      # deprecated Node 20 runtime. A bare CLI run needs no permissions
+      # and no Node at all.
+      - run: cargo audit
 
   deny:
     name: deny

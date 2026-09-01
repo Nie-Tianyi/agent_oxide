@@ -43,7 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
+      - uses: dtolnay/rust-toolchain@1.100
       # --locked: fail loudly instead of silently re-resolving the lockfile
       # (newest deps may require newer rustc than the MSRV).
       - run: cargo build --all --locked

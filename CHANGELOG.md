@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] - 2026-09-02
 
 ### Added
 
@@ -27,7 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `MacroCompactHook`, `CompactError`, `COMPACT_*` constants); `SkillHook` +
   `SKILL_MARKER` move to `agent_oxide::skills`; the shared
   `insert_before_history` helper moves to `agent_oxide::util`.
-- **Subagents are now Markdown-defined only (breaking)** — the compile-time
 
 - **Subagents are now Markdown-defined only (breaking)** — the compile-time
   path is removed: `SubagentConfig`, `filter_tools`, the fixed `"task"`

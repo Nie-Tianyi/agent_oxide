@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Subagents are now Markdown-defined only (breaking)** — the compile-time
+  path is removed: `SubagentConfig`, `filter_tools`, the fixed `"task"`
+  tool name, and the old `SubagentTool::new(llm, config, tools, memory)`
+  signature are gone. Subagents are defined as Markdown files with YAML
+  frontmatter (`agents/*.md`, Claude Code style) and discovered at runtime
+  via `SubagentRegistry::discover` + `register_subagents`. Each definition
+  becomes its own tool named after the definition, with the definition's
+  `description` as the routing signal the parent LLM sees.
+  `SubagentTool::new(llm, def, parent_registry, parent_memory,
+  parent_model)` builds a single tool from a `SubagentDef`; unset fields
+  fall back to the internal config defaults, `model` falls back to the
+  parent's model. Upgrading downstream crates requires writing
+  `agents/*.md` files — see `docs/subagent-migration-guide.md`.
+
 ## [0.6.2] - 2026-08-16
 
 ### Fixed

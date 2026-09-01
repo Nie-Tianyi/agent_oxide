@@ -101,8 +101,9 @@ provider ───────────────────────�
 | `engine` | `AgentHook` | Lifecycle hook trait | `src/core/engine/hooks.rs` |
 | `engine` | `EngineContext` | Agent dependencies (advanced API) | `src/core/engine/context.rs` |
 | `engine` | `InterventionRequest`, `InterventionResponse` | User-interaction protocol | `src/core/engine/intervention.rs` |
-| `subagent` | `SubagentTool<C>` | Child agent as a Tool | `src/extensions/subagent/tool.rs` |
-| `subagent` | `SubagentConfig` | Child agent policy | `src/extensions/subagent/config.rs` |
+| `subagent` | `SubagentTool<C>` | Child agent as a Tool (from a `SubagentDef`) | `src/extensions/subagent/tool.rs` |
+| `subagent` | `SubagentDef` | Markdown-defined subagent (name/description/model/tools) | `src/extensions/subagent/def.rs` |
+| `subagent` | `SubagentRegistry` | Discovery + wiring (`register_subagents`) | `src/extensions/subagent/registry.rs` |
 
 ### Design Decisions
 
@@ -1613,6 +1614,12 @@ On Windows: `taskkill /F /T /PID {pid}`.  On Unix: `kill(-pid, SIGKILL)`.
 
 ## 10. Subagent System
 
+Subagents are defined as **Markdown files with YAML frontmatter** (Claude
+Code `agents/*.md` style), discovered at runtime — there is no compile-time
+subagent configuration. Each definition becomes its own tool named after
+the definition; the definition's `description` is the routing signal the
+parent LLM sees.
+
 ### Architecture
 
 ```
@@ -1620,128 +1627,102 @@ Parent Agent
   │
   ├─ Memory (conversation history)
   │
-  ├─ ToolRegistry ────────┐
-  │   read, grep, glob,   │
-  │   calculator, write,  │
-  │   shell, task ←───────┤ (SubagentTool wraps a child Agent)
-  │                       │
-  └─ [LLM calls "task"] ──┤
-                          │
-                          ▼
-                    SubagentTool<C>.execute_stream()
-                          │
-                          │  Creates NEW Memory (isolated)
-                          │  Filters tools (read-only subset)
-                          │  Configures via SubagentConfig
-                          │
-                          ▼
-                    Child Agent
-                      │
-                      ├─ Memory: [system prompt, inherited context*, user prompt]
-                      ├─ Tools:  read, grep, glob, ls, calculator (no write/shell/task)
-                      │
-                      ├─ [ReAct Loop — up to max_steps iterations]
-                      │
-                      └─ Result → ProgressStream → back to parent
+  ├─ ToolRegistry ─────────────────┐
+  │   read, grep, glob,            │
+  │   calculator, write, shell,    │
+  │   code-reviewer ←──────────────┤ (SubagentTool wraps a child Agent)
+  │   researcher  ←────────────────┤
+  │                                │
+  └─ [LLM calls "code-reviewer"] ──┤
+                                   │
+                                   ▼
+                     SubagentTool<C>.execute_stream()
+                                   │
+                                   │  Creates NEW Memory (isolated)
+                                   │  Filters tools (def's tools allowlist)
+                                   │  Resolves config from the def
+                                   │
+                                   ▼
+                             Child Agent
+                               │
+                               ├─ Memory: [system prompt, inherited context*, user prompt]
+                               ├─ Tools:  def's allowlist ∩ parent registry
+                               │
+                               ├─ [ReAct Loop — up to max_steps iterations]
+                               │
+                               └─ Result → ProgressStream → back to parent
 ```
 
-*Inherited context: if `SubagentConfig::inherit_context_messages` is set,
-the last N non-System messages from the parent's memory are copied into
-the child's initial memory.
+*Inherited context: if `inherit_context_messages` is set in the
+definition, the last N non-System messages from the parent's memory are
+copied into the child's initial memory.
 
-### `SubagentTool` Implementation
+### Definition Files
+
+Drop Markdown files into an `agents/` directory:
+
+```markdown
+---
+name: code-reviewer
+description: Review code for correctness bugs, style issues, and regressions.
+model: deepseek-v4-flash
+tools: [read, grep, glob]
+max_steps: 40
+timeout_secs: 90
+inherit_context_messages: 3
+---
+
+You are a senior code reviewer. Read the relevant files first, then report
+bugs by severity with file:line references.
+```
+
+The body becomes the child's **system prompt**. `name` becomes the tool
+name, `description` the routing signal. See
+`docs/subagent-migration-guide.md` for the full field reference.
+
+### Discovery and Wiring
 
 ```rust
-#[tool(
-    name = "task",
-    description = "Delegate a complex task to a sub-agent with read-only ...",
-    args = TaskArgs
-)]
-pub struct SubagentTool<C: LLMClient + Clone + 'static> {
-    llm: C,
-    config: SubagentConfig,
-    subagent_tools: Arc<ToolRegistry>,
-    parent_memory: SharedMemory,
-}
+use agent_oxide::subagent::{SubagentRegistry, register_subagents};
+use std::path::PathBuf;
 
-impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
-    pub fn new(
-        llm: C,
-        config: SubagentConfig,
-        subagent_tools: Arc<ToolRegistry>,
-        parent_memory: SharedMemory,
-    ) -> Self { ... }
+let registry = SubagentRegistry::discover(&[PathBuf::from("./agents")]);
 
-    // execute_stream spawns a child Agent:
-    // 1. Clone the LLM client
-    // 2. Build an EngineContext with isolated Memory
-    // 3. Run the child agent
-    // 4. Stream results as Progress events
-}
+let agent = register_subagents(
+    Agent::builder(client.clone(), model),
+    client,
+    &registry,
+    &parent_registry, // parent tools WITHOUT any subagent tools — recursion guard
+    parent_memory,
+    model,            // fallback model for defs without `model:`
+)
+.build();
 ```
 
-### `SubagentConfig`
+A single definition can be wired directly with `SubagentTool::new` (the
+tool's `name()`/`description()` come from the def):
 
 ```rust
-pub struct SubagentConfig {
-    pub model: String,                           // Required
-    pub system_prompt: String,                   // Default: read-only assistant
-    pub max_steps: usize,                        // Default: 25
-    pub max_retries: usize,                      // Default: 2
-    pub streaming: bool,                         // Default: true
-    pub timeout_secs: Option<u64>,              // Default: Some(120)
-    pub inherit_context_messages: Option<usize>, // Default: None
-}
+use agent_oxide::subagent::{SubagentTool, SubagentDef};
+
+let tool = SubagentTool::new(client, def, &parent_registry, parent_memory, model);
 ```
 
-### `filter_tools()` — Creating a Read-Only Registry
+### Recursion Safety Contract
 
-```rust
-use agent_oxide::subagent::filter_tools;
-use std::sync::Arc;
+`parent_registry` **must not contain subagent tools**. Each child's tool
+set is the def's `tools` allowlist filtered against exactly this registry,
+so a child can never reach another subagent — recursion is prevented by
+construction. Definitions whose `name` collides with an existing parent
+tool are skipped with a warning (never clobbered).
 
-// Parent has: read, write, edit, grep, glob, ls, calculator, shell, task
-let parent_registry = parent_agent.tools();
+### Execution Pattern
 
-// Subagent gets: read, grep, glob, ls, calculator (no write, shell, or task!)
-let subagent_tools = Arc::new(filter_tools(
-    &parent_registry,
-    &["read", "grep", "glob", "ls", "calculator"],
-));
-
-// Critical: never include "task" — prevents infinite subagent recursion
-```
-
-### Usage Example
-
-```rust
-use agent_oxide::subagent::{SubagentTool, SubagentConfig, filter_tools};
-
-let subagent_tools = Arc::new(filter_tools(tools, &["read", "grep", "glob", "calculator"]));
-
-let subagent = SubagentTool::new(
-    client.clone(),
-    SubagentConfig {
-        model: "deepseek-v4-flash".into(),
-        timeout_secs: Some(60),
-        ..Default::default()
-    },
-    subagent_tools,
-    memory.clone(),
-);
-
-let agent = Agent::builder(client, "deepseek-chat")
-    .tool(subagent)
-    // ... other tools ...
-    .build();
-```
-
-### Worker-Thread Pattern
-
-`SubagentTool::execute_stream()` spawns a dedicated OS thread that runs the
-child agent to completion.  Progress updates flow through a `tokio::sync::mpsc`
-channel back to the main runtime.  A timeout guard (`tokio::select!` or
-`tokio::time::timeout`) kills the thread if it runs too long.
+`SubagentTool::execute_stream()` spawns a tokio task that runs the child
+agent to completion.  Progress updates flow through a
+`tokio::sync::mpsc` channel back to the parent's tool loop.  A timeout
+guard (`tokio::select!` + `tokio::time::sleep_until`) aborts the child
+task if it runs past `timeout_secs`.
 
 ---
 
@@ -1826,7 +1807,8 @@ use agent_oxide::deepseek::DeepSeekClient;
 use agent_oxide::engine::{Agent, AgentEvent, EngineContext};
 use agent_oxide::hooks::{MicroCompactHook, MacroCompactHook};
 use agent_oxide::memory::{Memory, SharedMemory};
-use agent_oxide::subagent::{SubagentTool, SubagentConfig, filter_tools};
+use agent_oxide::subagent::{SubagentRegistry, SubagentTool};
+use std::path::PathBuf;
 use std::sync::Arc;
 use agent_oxide::tools::ToolRegistry;
 use tokio::sync::mpsc;
@@ -1842,7 +1824,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         provider::Role::System,
         "You are an expert code reviewer. Analyze code for bugs, security \
          issues, and style problems. Use the read tool to inspect files, \
-         grep to search for patterns, and task for complex investigations.",
+         grep to search for patterns, and code-reviewer for complex \
+         investigations.",
     ));
     let memory: SharedMemory = Arc::new(std::sync::RwLock::new(memory));
 
@@ -1853,38 +1836,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     registry.register(Arc::new(GlobTool::new(workspace_root.clone())));
     registry.register(Arc::new(LsTool::new(workspace_root.clone())));
     registry.register(Arc::new(CalculatorTool));
-    let registry = Arc::new(registry);
 
-    // ── Subagent ───────────────────────────────────────────────────────
-    let subagent_tools = Arc::new(filter_tools(
-        &registry,
-        &["read", "grep", "glob", "ls", "calculator"],
-    ));
-
-    let subagent = SubagentTool::new(
-        main_client.clone(),
-        SubagentConfig {
-            model: "deepseek-v4-flash".into(),
-            timeout_secs: Some(120),
-            inherit_context_messages: Some(3),
-            max_steps: 25,
-            system_prompt: "Expert code reviewer sub-agent...".into(),
-            ..Default::default()
-        },
-        subagent_tools,
-        memory.clone(),
-    );
-
-    // Add subagent to main registry
-    let registry_mut = Arc::get_mut(&mut registry_clone)?;
-    registry_mut.register(Arc::new(subagent));
-    // Actually, since registry is Arc, clone and add:
-    let mut full_registry = ToolRegistry::new();
-    for (name, tool) in registry.iter() {
-        full_registry.register(Arc::clone(tool));
+    // ── Subagent — discovered from agents/code-reviewer.md ─────────────
+    // (name: code-reviewer, description: ..., model: deepseek-v4-flash,
+    //  tools: [read, grep, glob, ls, calculator], inherit_context_messages: 3)
+    //
+    // The subagent is registered LAST, so its `tools` allowlist is
+    // filtered against a registry without subagent tools — the recursion
+    // safety contract (a child can never reach another subagent).
+    let subagent_registry = SubagentRegistry::discover(&[PathBuf::from("./agents")]);
+    if let Some(def) = subagent_registry.by_name("code-reviewer") {
+        registry.register(Arc::new(SubagentTool::new(
+            main_client.clone(),
+            def.clone(),
+            &registry,
+            memory.clone(),
+            "deepseek-chat", // fallback model for defs without `model:`
+        )));
     }
-    full_registry.register(Arc::new(subagent));
-    let registry = Arc::new(full_registry);
+    let registry = Arc::new(registry);
 
     // ── Compaction Hooks ───────────────────────────────────────────────
     let micro = MicroCompactHook::default();

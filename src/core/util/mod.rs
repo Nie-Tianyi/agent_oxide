@@ -3,6 +3,8 @@
 //! Small helpers shared across the workspace (persistence crate, sandbox
 //! audit logging, hooks in the binary).
 
+pub(crate) mod md;
+
 use time::OffsetDateTime;
 use time::macros::format_description;
 

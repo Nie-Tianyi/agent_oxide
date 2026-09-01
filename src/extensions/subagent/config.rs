@@ -1,11 +1,12 @@
-//! Configuration for [`SubagentTool`].
+//! Resolved run configuration for a [`SubagentTool`](crate::subagent::SubagentTool).
 
-/// Configuration for a subagent invocation.
+/// Resolved runtime settings for a subagent invocation.
 ///
-/// All fields have sensible defaults.  The only required field is
-/// [`model`](Self::model), which must be set explicitly by the caller.
+/// Internal type — constructed from a
+/// [`SubagentDef`](crate::subagent::SubagentDef) via
+/// [`SubagentDef::into_config`].  All fields have sensible defaults.
 #[derive(Clone, Debug)]
-pub struct SubagentConfig {
+pub(crate) struct SubagentConfig {
     /// LLM model name for the subagent (e.g. `"deepseek-v4-flash"`).
     pub model: String,
 
@@ -23,7 +24,11 @@ pub struct SubagentConfig {
 
     /// Hard wall-clock timeout in seconds for the entire subagent run.
     /// When elapsed, the subagent task is aborted and a timeout message
-    /// is returned as the tool result.  `None` disables the timeout.
+    /// is returned as the tool result.
+    ///
+    /// `None` means no configured timeout — the tool's built-in 300 s
+    /// safety fallback applies. (`Some(0)` is the definition-file spelling
+    /// for `None`; [`SubagentDef`](crate::subagent::SubagentDef) maps it.)
     pub timeout_secs: Option<u64>,
 
     /// If `Some(n)`, copy the last `n` non-System messages from the

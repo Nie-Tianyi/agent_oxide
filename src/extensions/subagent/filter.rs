@@ -8,7 +8,10 @@ use crate::tools::ToolRegistry;
 /// Each allowed tool name must match a tool registered in `source`.
 /// Missing names are silently skipped so the parent can add or remove
 /// tools without breaking the subagent configuration.
-pub fn filter_tools(source: &ToolRegistry, allowed: &[&str]) -> ToolRegistry {
+///
+/// Internal helper — used by [`SubagentTool`](crate::subagent::SubagentTool)
+/// to build a child's tool set from a definition's `tools` allowlist.
+pub(crate) fn filter_tools(source: &ToolRegistry, allowed: &[&str]) -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     for name in allowed {
         if let Some(tool) = source.get(name) {

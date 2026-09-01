@@ -1,6 +1,6 @@
 //! [`SubagentTool`] — a `Tool` that spawns a child [`Agent`] for complex sub-tasks.
 //!
-//! When the parent LLM calls the `task` tool, this implementation creates a
+//! When the parent LLM calls the tool, this implementation creates a
 //! fresh agent with its own memory and a filtered tool set, runs it to
 //! completion, and streams progress events back to the parent via
 //! [`ProgressStream`].
@@ -18,6 +18,8 @@ use serde::Deserialize;
 use tokio::sync::mpsc;
 
 use super::config::SubagentConfig;
+use super::def::SubagentDef;
+use super::filter::filter_tools;
 
 /// Default timeout in seconds when `SubagentConfig::timeout_secs` is `None`.
 const DEFAULT_SUBAGENT_TIMEOUT_SECS: u64 = 300;
@@ -41,6 +43,11 @@ pub struct SubagentTool<C: LLMClient + Clone + 'static> {
     config: SubagentConfig,
     subagent_tools: Arc<ToolRegistry>,
     parent_memory: SharedMemory,
+    /// Tool name — the definition name the parent LLM calls.
+    tool_name: String,
+    /// Tool description — the routing signal the parent LLM sees when
+    /// deciding which subagent to delegate to.
+    tool_description: String,
     /// Optional trace store — when set, subagent runs emit
     /// [`TraceEvent::SubagentFinished`] on completion.
     trace_store: Option<Arc<TraceStore>>,
@@ -48,11 +55,11 @@ pub struct SubagentTool<C: LLMClient + Clone + 'static> {
 
 impl<C: LLMClient + Clone + 'static> Tool for SubagentTool<C> {
     fn name(&self) -> &str {
-        "task"
+        &self.tool_name
     }
 
     fn description(&self) -> &str {
-        "Delegate a complex task to a sub-agent with read-only workspace tools (read, ls, glob, grep, calculator). The sub-agent works independently — it can investigate, search, and analyze, but cannot write, edit, or execute shell commands. Use this for multi-step tasks requiring multiple tool calls and independent reasoning. Provide a clear description and a detailed prompt with specific instructions about the expected output format."
+        &self.tool_description
     }
 
     fn parameter_schema(&self) -> serde_json::Value {
@@ -68,28 +75,44 @@ impl<C: LLMClient + Clone + 'static> Tool for SubagentTool<C> {
 }
 
 impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
-    /// Create a new subagent tool.
+    /// Create a new subagent tool from a [`SubagentDef`].
+    ///
+    /// The tool's name and description come from the definition (the
+    /// description is the routing signal the parent LLM sees); the run
+    /// configuration is resolved from the def's fields with `parent_model`
+    /// as the model fallback; the child's tool set is the definition's
+    /// `tools` allowlist filtered against `parent_registry`.
     ///
     /// * `llm` — A cloneable LLM client.  Each sub-agent invocation creates
     ///   a fresh clone so concurrent sub-agents are independent.
-    /// * `config` — Sub-agent policy (model, max steps, timeout, …).
-    /// * `subagent_tools` — The tool registry given to the child agent.
-    ///   Should be a **subset** of the parent's tools, without the `task`
-    ///   tool itself (to prevent infinite recursion).
+    /// * `def` — The subagent definition (parsed from a Markdown file, or
+    ///   built programmatically).
+    /// * `parent_registry` — The parent's tool set **without any subagent
+    ///   tools** (recursion is prevented by construction).
     /// * `parent_memory` — Reference to the parent agent's conversation
     ///   memory.  Used only for reading optional context inheritance;
     ///   the sub-agent's own memory is always isolated.
+    /// * `parent_model` — Fallback model for definitions that don't set one
+    ///   (use the same string given to `Agent::builder`).
     pub fn new(
         llm: C,
-        config: SubagentConfig,
-        subagent_tools: Arc<ToolRegistry>,
+        def: SubagentDef,
+        parent_registry: &ToolRegistry,
         parent_memory: SharedMemory,
+        parent_model: &str,
     ) -> Self {
+        let tool_name = def.name.clone();
+        let tool_description = def.description.clone();
+        // Borrow the def first, then consume it into the config.
+        let subagent_tools = def_tool_registry(parent_registry, &def.tools);
+        let config = def.into_config(parent_model);
         Self {
             llm,
             config,
             subagent_tools,
             parent_memory,
+            tool_name,
+            tool_description,
             trace_store: None,
         }
     }
@@ -99,6 +122,17 @@ impl<C: LLMClient + Clone + 'static> SubagentTool<C> {
         self.trace_store = Some(store);
         self
     }
+}
+
+/// Child tool registry for a definition: the def's `tools` allowlist
+/// filtered against the parent registry.
+///
+/// Names not present in the parent registry (including other subagent
+/// definitions — the parent registry must not contain subagent tools) are
+/// dropped, so recursion is prevented by construction.
+fn def_tool_registry(parent_registry: &ToolRegistry, tools: &[String]) -> Arc<ToolRegistry> {
+    let names: Vec<&str> = tools.iter().map(String::as_str).collect();
+    Arc::new(filter_tools(parent_registry, &names))
 }
 
 // ── TaskArgs ─────────────────────────────────────────────────────────────────
@@ -509,5 +543,136 @@ mod tests {
         let json = r#"{"description": "t", "prompt": "p", "extra": 1}"#;
         let err = serde_json::from_str::<TaskArgs>(json).unwrap_err();
         assert!(err.to_string().contains("extra"));
+    }
+
+    // ── Dynamic definitions ────────────────────────────────────────────────────
+
+    use crate::extensions::subagent::def::SubagentDef;
+    use crate::memory::Memory;
+    use crate::provider::{CompletionRequest, CompletionResponse, ProviderError, StreamChunk};
+    use futures_util::stream::BoxStream;
+    use std::sync::RwLock;
+
+    /// Mock LLM client — never called by these tests.
+    #[derive(Clone)]
+    struct MockClient;
+
+    impl LLMClient for MockClient {
+        async fn generate(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<CompletionResponse, ProviderError> {
+            unreachable!("generate must not be called in tool tests")
+        }
+
+        async fn stream(
+            &self,
+            _req: CompletionRequest,
+        ) -> Result<BoxStream<'static, Result<StreamChunk, ProviderError>>, ProviderError> {
+            unreachable!("stream must not be called in tool tests")
+        }
+    }
+
+    struct MockTool {
+        name: &'static str,
+    }
+
+    impl Tool for MockTool {
+        fn name(&self) -> &str {
+            self.name
+        }
+        fn description(&self) -> &str {
+            "mock"
+        }
+        fn parameter_schema(&self) -> serde_json::Value {
+            serde_json::json!({})
+        }
+        fn execute_stream(&self, _args: &str) -> Result<ProgressStream, ToolError> {
+            Ok(ProgressStream::done("ok".into()))
+        }
+    }
+
+    fn parent_memory() -> SharedMemory {
+        Arc::new(RwLock::new(Memory::new()))
+    }
+
+    fn parent_registry(names: &[&'static str]) -> ToolRegistry {
+        let mut r = ToolRegistry::new();
+        for name in names {
+            r.register(Arc::new(MockTool { name }));
+        }
+        r
+    }
+
+    fn sample_def(name: &str, description: &str, tools: &[&str]) -> SubagentDef {
+        SubagentDef {
+            name: name.into(),
+            description: description.into(),
+            model: None,
+            tools: tools.iter().map(|s| s.to_string()).collect(),
+            max_steps: None,
+            max_retries: None,
+            streaming: None,
+            timeout_secs: None,
+            inherit_context_messages: None,
+            system_prompt: format!("You are {name}."),
+        }
+    }
+
+    #[test]
+    fn new_sets_name_and_description_from_def() {
+        let registry = parent_registry(&["read", "grep"]);
+        let tool = SubagentTool::new(
+            MockClient,
+            sample_def("code-reviewer", "Review code for bugs.", &["read"]),
+            &registry,
+            parent_memory(),
+            "parent-model",
+        );
+        assert_eq!(tool.name(), "code-reviewer");
+        assert_eq!(tool.description(), "Review code for bugs.");
+    }
+
+    #[test]
+    fn new_parameter_schema_has_task_args() {
+        let registry = parent_registry(&["read"]);
+        let tool = SubagentTool::new(
+            MockClient,
+            sample_def("code-reviewer", "Desc.", &["read"]),
+            &registry,
+            parent_memory(),
+            "parent-model",
+        );
+        let schema = tool.parameter_schema();
+        let properties = schema.get("properties").unwrap();
+        assert!(properties.get("description").is_some());
+        assert!(properties.get("prompt").is_some());
+    }
+
+    #[test]
+    fn def_tool_registry_filters_to_existing_parent_tools() {
+        let parent = parent_registry(&["read", "grep"]);
+        let child = def_tool_registry(&parent, &["read".into(), "missing".into()]);
+        assert_eq!(child.len(), 1);
+        assert!(child.has("read"));
+    }
+
+    #[test]
+    fn def_tool_registry_drops_referenced_subagent_names() {
+        // A def referencing another def's name: the name is not in the
+        // parent registry (which must not contain subagent tools), so it
+        // is dropped — recursion is prevented by construction.
+        let parent = parent_registry(&["read"]);
+        let child = def_tool_registry(&parent, &["other-subagent".into(), "read".into()]);
+        assert_eq!(child.len(), 1);
+        assert!(child.has("read"));
+        assert!(!child.has("other-subagent"));
+    }
+
+    #[test]
+    fn def_tool_registry_empty_allowlist_yields_empty_registry() {
+        let parent = parent_registry(&["read", "grep"]);
+        let child = def_tool_registry(&parent, &[]);
+        assert!(child.is_empty());
     }
 }

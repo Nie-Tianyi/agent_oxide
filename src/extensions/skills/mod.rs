@@ -213,28 +213,14 @@ impl std::fmt::Display for SkillError {
 /// Skill instructions here...
 /// ```
 fn parse_skill_file(raw: &str) -> Result<SkillDef, SkillError> {
-    let trimmed = raw.trim_start();
-
-    // Must start with "---\n" or "---\r\n"
-    let after_open = trimmed
-        .strip_prefix("---\n")
-        .or_else(|| trimmed.strip_prefix("---\r\n"))
-        .ok_or(SkillError::MissingOpeningDelimiter)?;
-
-    // Find closing "---\n" or "---\r\n"
-    let (yaml_block, body) = if let Some(rest) = after_open.strip_prefix("---\n") {
-        ("", rest)
-    } else {
-        let close_pos = after_open
-            .find("\n---\n")
-            .or_else(|| after_open.find("\r\n---\r\n"))
-            .ok_or(SkillError::MissingClosingDelimiter)?;
-
-        // Split: the YAML block does not include the "\n---\n"
-        let yaml = &after_open[..close_pos];
-        let body_offset = close_pos + "\n---\n".len();
-        (yaml, &after_open[body_offset..])
-    };
+    let (yaml_block, body) = crate::util::md::split_frontmatter(raw).map_err(|e| match e {
+        crate::util::md::MdFrontmatterError::MissingOpeningDelimiter => {
+            SkillError::MissingOpeningDelimiter
+        }
+        crate::util::md::MdFrontmatterError::MissingClosingDelimiter => {
+            SkillError::MissingClosingDelimiter
+        }
+    })?;
 
     let fm: SkillFrontmatter = serde_yaml::from_str(yaml_block)
         .map_err(|e| SkillError::InvalidFrontmatter(e.to_string()))?;

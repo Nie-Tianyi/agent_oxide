@@ -129,30 +129,32 @@ let agent = Agent::builder(client, model)
 ### 3. Multi-agent orchestration: subagents and shared memory
 
 **Delegation** — `SubagentTool` spawns an isolated child agent for complex
-sub-tasks. Give the child a **restricted tool set** (never the `task` tool
-itself, to prevent recursion):
+sub-tasks. Subagents are defined as Markdown files with YAML frontmatter
+(`agents/*.md`, Claude Code style) and discovered at runtime; each
+definition becomes its own tool named after the definition, with the
+definition's `description` as the routing signal the parent LLM sees:
 
 ```rust,ignore
-use agent_oxide::subagent::{SubagentConfig, SubagentTool};
-use agent_oxide::subagent::filter_tools;
+use agent_oxide::subagent::{SubagentRegistry, register_subagents};
+use std::path::PathBuf;
 
-let child_tools = Arc::new(filter_tools(
-    &parent_registry,
-    &["read", "ls", "glob", "grep", "calculator"],
-));
+let subagents = SubagentRegistry::discover(&[PathBuf::from("./agents")]);
 
-let task_tool = SubagentTool::new(
-    client.clone(),          // cloned per invocation — children are independent
-    SubagentConfig::default(),
-    child_tools,
-    parent_memory.clone(),   // child memory stays isolated
-);
-
-let agent = Agent::builder(client, model)
-    .tool(task_tool)
-    .memory(parent_memory)
-    .build();
+let agent = register_subagents(
+    Agent::builder(client.clone(), model),
+    client,
+    &subagents,
+    &parent_registry, // parent tools WITHOUT subagent tools — recursion guard
+    parent_memory.clone(),
+    model,            // fallback model for defs without `model:`
+)
+.build();
 ```
+
+A single definition can be wired directly via `SubagentTool::new(client,
+def, &parent_registry, parent_memory, model)` — e.g. `registry.by_name("x")`.
+See `docs/subagent-migration-guide.md` for the definition format, the
+recursion safety contract, and the 0.6.2 → 0.7.0 migration steps.
 
 **Collaboration** — two agents sharing one `SharedMemory` take turns on the
 same conversation; each run appends to the shared history:
@@ -183,23 +185,32 @@ Observability → Persistence → Skills → PlanMode → Profile → Todo → C
 ```rust,ignore
 use agent_oxide::prelude::*;
 
-let agent = Agent::builder(client, "deepseek-v4-pro")
-    .system_prompt(harness_system_prompt)
-    .tool(SubagentTool::new(...))
-    .tool(LoadSkillTool::new(...))
-    .hook(ObservabilityHook::new(trace_store))
-    .hook(PersistenceHook::new(
-        workspace_root,
-        PersistenceConfig::default(),
-        client.clone(),
-        "deepseek-chat".into(),
-    ))
-    .hook(SkillInjectHook::new(active_skills))
-    .hook(MicroCompactHook::default())
-    .hook(MacroCompactHook::default())
-    .hook(SandboxHook::new(SandboxConfig::load(&sandbox_path)))
-    .max_steps(50)
-    .build();
+// Subagents discovered from agents/*.md, wired onto the builder first
+// (the parent registry here is everything registered so far — subagents
+// last, so no child can reach another subagent).
+let agent = register_subagents(
+    Agent::builder(client.clone(), "deepseek-v4-pro")
+        .system_prompt(harness_system_prompt)
+        .tool(LoadSkillTool::new(...))
+        .hook(ObservabilityHook::new(trace_store))
+        .hook(PersistenceHook::new(
+            workspace_root,
+            PersistenceConfig::default(),
+            client.clone(),
+            "deepseek-chat".into(),
+        ))
+        .hook(SkillInjectHook::new(active_skills))
+        .hook(MicroCompactHook::default())
+        .hook(MacroCompactHook::default())
+        .hook(SandboxHook::new(SandboxConfig::load(&sandbox_path)))
+        .max_steps(50),
+    client,
+    &SubagentRegistry::discover(&[agents_dir]),
+    &parent_registry, // WITHOUT subagent tools — recursion guard
+    memory.clone(),
+    "deepseek-chat",
+)
+.build();
 ```
 
 The same agent can then be exposed through any UI — which is Part II.
